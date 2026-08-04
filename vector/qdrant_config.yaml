@@ -1,0 +1,4 @@
+﻿mode: optional
+collection: auto_kb
+fallback: sqlite-keyword
+

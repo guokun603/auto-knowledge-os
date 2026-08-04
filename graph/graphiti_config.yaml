@@ -1,0 +1,3 @@
+﻿mode: optional
+fallback: sqlite-edges
+

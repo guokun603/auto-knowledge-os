@@ -1,0 +1,4 @@
+﻿[knowledge]
+root = "."
+authoritative_store = "knowledge"
+state_db = "memory/knowledge.db"

@@ -1,0 +1,6 @@
+﻿# Optional real integrations. The system works without these through local fallbacks.
+langgraph>=0.2
+mem0ai>=0.1
+qdrant-client>=1.9
+graphiti-core>=0.3
+mcp>=1.0

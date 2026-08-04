@@ -1,0 +1,34 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local environments
+.venv/
+.env
+.env.*
+!.env.example
+
+# Runtime state and local indexes
+.auto_kb/current_task
+.auto_kb/full-auto-audit.json
+memory/*.db
+memory/*.db-*
+vector/qdrant_local/
+graph/*.db
+graph/*.db-*
+
+# Generated task workspaces may contain private evidence/logs.
+tasks/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+*.tmp
+*.log
+
+# Local caches
+.tmp-openai-docs-cache/
