@@ -12,10 +12,11 @@ For any substantial task:
 2. Maintain the task quartet: `goal.md`, `plan.md`, `preflight.md`, `log.md`.
 3. Run or simulate the knowledge preflight before execution.
 4. Store evidence under the task `evidence/` directory.
-5. Extract durable conclusions as candidate knowledge.
-6. Publish accepted or verified knowledge to `knowledge/` Markdown files.
-7. Update derived memory/index layers through automation tools.
-8. Run the gate before final response.
+5. Treat Preflight v2 `Required Actions` as task-local obligations; each must be marked `resolved`, `needs-review`, or `rejected`.
+6. Extract durable conclusions as candidate knowledge.
+7. Publish accepted or verified knowledge to `knowledge/` Markdown files.
+8. Update derived memory/index layers through automation tools.
+9. Run the gate before final response.
 
 ## Knowledge Architecture
 
@@ -29,11 +30,12 @@ For any substantial task:
 
 ## Completion Gate
 
-A task is not complete unless the task quartet exists, preflight contains a gate result, evidence exists, and no candidate knowledge remains pending for this task unless marked `needs-review` or `rejected`.
+A task is not complete unless the task quartet exists, preflight contains a gate result, every Preflight v2 required action is closed as `resolved`, `needs-review`, or `rejected`, evidence exists, and no candidate knowledge remains pending for this task unless marked `needs-review` or `rejected`.
 
 ## Do Not
 
 - Do not rely on chat history as the authoritative knowledge store.
 - Do not load all historical conversations into context.
+- Do not treat knowledge search hits as consumed until they become required actions and receive a closure status.
 - Do not publish uncertain guesses as facts.
 - Do not claim completion when the gate fails.

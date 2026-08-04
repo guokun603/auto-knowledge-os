@@ -7,6 +7,8 @@ import unittest
 import os
 from pathlib import Path
 
+os.environ.setdefault("AUTO_KB_DISABLE_EXTERNAL", "1")
+
 from auto_kb.store import KnowledgeStore
 from auto_kb.workflow import KnowledgeClosureWorkflow
 
@@ -35,9 +37,22 @@ class AutoKBTests(unittest.TestCase):
             task = store.create_task("证据测试", "需要 evidence 的任务")
             result = store.preflight(task, "需要 evidence 的任务")
             self.assertEqual(result["gate"], "NEEDS-REVIEW")
+            self.assertTrue(result["discussion_required"])
+            self.assertTrue(result["required_actions"])
             for name in ["goal.md", "plan.md", "preflight.md", "log.md"]:
                 self.assertTrue((Path(td) / "tasks" / task / name).exists())
             self.assertTrue(any("pitfalls" in h["path"] for h in result["hits"]))
+
+    def test_gate_blocks_unresolved_preflight_actions(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            task = store.create_task("隐患消费测试", "需要 evidence 的任务")
+            store.preflight(task, "需要 evidence 的任务")
+            store.add_evidence(task, "proof.txt", "proof")
+            result = store.gate(task)
+            self.assertFalse(result["pass"])
+            self.assertIn("unresolved preflight required actions", " ".join(result["errors"]))
 
     def test_stage_publish_and_gate(self):
         with tempfile.TemporaryDirectory() as td:
@@ -45,6 +60,7 @@ class AutoKBTests(unittest.TestCase):
             store.init()
             task = store.create_task("闭环测试", "测试知识闭环")
             store.preflight(task, "测试知识闭环")
+            store.resolve_required_action(task, "all", "resolved", "unit test handled preflight risks")
             store.add_evidence(task, "proof.txt", "proof")
             cid = store.stage_candidate("测试结论必须落库", "lesson", evidence="unit test", source_task=task)
             failed = store.gate(task)
@@ -61,6 +77,7 @@ class AutoKBTests(unittest.TestCase):
             store.init()
             task = store.create_task("空证据测试", "测试空证据不能过门禁")
             store.preflight(task, "测试空证据不能过门禁")
+            store.resolve_required_action(task, "all", "resolved", "unit test focuses on empty evidence")
             (Path(td) / "tasks" / task / "evidence" / "empty.txt").write_text("", encoding="utf-8")
             result = store.gate(task)
             self.assertFalse(result["pass"])

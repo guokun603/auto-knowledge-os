@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 from dataclasses import dataclass
 from typing import Any
@@ -29,9 +30,38 @@ def point_id(text: str) -> int:
     return int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:8], "big") & ((1 << 63) - 1)
 
 
+def external_integrations_disabled() -> bool:
+    return os.environ.get("AUTO_KB_DISABLE_EXTERNAL", "").strip().lower() in {"1", "true", "yes"}
+
+
+def module_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
+
+
+def probe_adapter_statuses(store: KnowledgeStore) -> list[AdapterStatus]:
+    disabled = external_integrations_disabled()
+    if disabled:
+        detail = "external integrations disabled by AUTO_KB_DISABLE_EXTERNAL"
+        return [
+            AdapterStatus("mem0", "sqlite-fallback", False, detail),
+            AdapterStatus("graphiti", "sqlite-fallback", False, detail),
+            AdapterStatus("qdrant", "sqlite-keyword-fallback", False, detail),
+            AdapterStatus("langgraph", "local-checkpoint-graph", False, detail),
+        ]
+    return [
+        AdapterStatus("mem0", "external-sdk-local-store" if module_available("mem0") else "sqlite-fallback", module_available("mem0"), f"mem0 package {'found' if module_available('mem0') else 'not found'}; local fallback remains SQLite"),
+        AdapterStatus("graphiti", "external-sdk-local-edges" if module_available("graphiti_core") else "sqlite-fallback", module_available("graphiti_core"), f"graphiti_core package {'found' if module_available('graphiti_core') else 'not found'}; local fallback remains SQLite"),
+        AdapterStatus("qdrant", "external-local-qdrant" if module_available("qdrant_client") else "sqlite-keyword-fallback", module_available("qdrant_client"), f"qdrant_client package {'found' if module_available('qdrant_client') else 'not found'}; local path: {store.root / 'vector' / 'qdrant_local'}"),
+        AdapterStatus("langgraph", "external-stategraph" if module_available("langgraph") else "local-checkpoint-graph", module_available("langgraph"), f"langgraph package {'found' if module_available('langgraph') else 'not found'}; local checkpoints remain SQLite"),
+    ]
+
+
 class Mem0Adapter:
     def __init__(self, store: KnowledgeStore) -> None:
         self.store = store
+        if external_integrations_disabled():
+            self.status = AdapterStatus("mem0", "sqlite-fallback", False, "external integrations disabled by AUTO_KB_DISABLE_EXTERNAL")
+            return
         try:
             mem0_dir = store.root / "memory" / "mem0_home"
             mem0_dir.mkdir(parents=True, exist_ok=True)
@@ -54,6 +84,9 @@ class Mem0Adapter:
 class GraphitiAdapter:
     def __init__(self, store: KnowledgeStore) -> None:
         self.store = store
+        if external_integrations_disabled():
+            self.status = AdapterStatus("graphiti", "sqlite-fallback", False, "external integrations disabled by AUTO_KB_DISABLE_EXTERNAL")
+            return
         try:
             import graphiti_core  # type: ignore  # noqa: F401
             self.status = AdapterStatus("graphiti", "external-sdk-local-edges", True, "graphiti_core import available; SQLite edge log remains local fallback without Neo4j config")
@@ -76,6 +109,9 @@ class VectorAdapter:
     def __init__(self, store: KnowledgeStore) -> None:
         self.store = store
         self.client = None
+        if external_integrations_disabled():
+            self.status = AdapterStatus("qdrant", "sqlite-keyword-fallback", False, "external integrations disabled by AUTO_KB_DISABLE_EXTERNAL")
+            return
         try:
             from qdrant_client import QdrantClient
             from qdrant_client.models import Distance, VectorParams
@@ -118,6 +154,9 @@ class LangGraphAdapter:
     def __init__(self, store: KnowledgeStore) -> None:
         self.store = store
         self.app = None
+        if external_integrations_disabled():
+            self.status = AdapterStatus("langgraph", "local-checkpoint-graph", False, "external integrations disabled by AUTO_KB_DISABLE_EXTERNAL")
+            return
         try:
             from langgraph.graph import END, START, StateGraph
             graph = StateGraph(dict)

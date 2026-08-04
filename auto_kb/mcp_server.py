@@ -90,6 +90,19 @@ TOOL_DEFINITIONS = {
             "properties": {"task": {"type": "string", "default": "current"}},
         },
     },
+    "task.resolve_action": {
+        "description": "Mark a preflight required action as resolved, needs-review, rejected, or pending.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": {"type": "string", "default": "current"},
+                "id": {"type": "string"},
+                "status": {"type": "string", "default": "resolved"},
+                "note": {"type": "string", "default": ""},
+            },
+            "required": ["id"],
+        },
+    },
     "workflow.run": {
         "description": "Run the full knowledge closure workflow.",
         "inputSchema": {
@@ -114,6 +127,7 @@ def call_tool(store: KnowledgeStore, name: str, args: dict[str, Any]) -> Any:
     if name == "task.create": return {"task_id": store.create_task(args["title"], args.get("goal"))}
     if name == "task.preflight": return store.preflight(args.get("task", "current"), args["goal"])
     if name == "task.gate": return store.gate(args.get("task", "current"))
+    if name == "task.resolve_action": return {"required_actions": store.resolve_required_action(args.get("task", "current"), args["id"], args.get("status", "resolved"), args.get("note", ""))}
     if name == "workflow.run":
         result = KnowledgeClosureWorkflow(str(store.root)).run(args["title"], args["goal"], args.get("conclusion"))
         return result.__dict__

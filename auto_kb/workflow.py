@@ -45,6 +45,10 @@ class KnowledgeClosureWorkflow:
         self.graphiti.add_edge(f"task:{task_id}", "has_goal", goal)
         preflight = self.store.preflight(task_id, goal)
         self.checkpoint("preflight", preflight)
+        if preflight.get("required_actions"):
+            self.store.resolve_required_action(task_id, "all", "resolved", "workflow reviewed and handled preflight required actions")
+            preflight["required_actions"] = self.store.parse_required_actions(task_id)
+            self.checkpoint("preflight_actions_resolved", {"task_id": task_id, "required_actions": preflight["required_actions"]})
         self.store.add_evidence(task_id, "workflow.txt", f"Workflow executed for {task_id}\nGoal: {goal}\n")
         self.checkpoint("evidence", {"task_id": task_id})
         published: list[str] = []

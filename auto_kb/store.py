@@ -18,6 +18,9 @@ ROUTES = {
     "fact": "runbooks",
 }
 REQUIRED_TASK_FILES = ["goal.md", "plan.md", "preflight.md", "log.md"]
+ACTION_STATUSES = {"pending", "resolved", "needs-review", "rejected"}
+ACTION_CLOSED_STATUSES = {"resolved", "needs-review", "rejected"}
+ACTION_RE = re.compile(r"^- \[(?P<status>[^\]]+)\] (?P<id>RA-\d+) \((?P<kind>[^)]+)\) (?P<path>.+?) :: (?P<summary>.*)$")
 
 
 def now() -> str:
@@ -247,12 +250,87 @@ class KnowledgeStore:
         hits.sort(key=lambda x: x[0], reverse=True)
         return [{"score": s, "path": str(p.relative_to(self.root)), "preview": prev} for s, p, prev in hits[:limit]]
 
+    def _knowledge_title(self, rel_path: str) -> str:
+        path = self.root / rel_path
+        if not path.exists():
+            return rel_path
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            if line.startswith("# "):
+                return line.lstrip("# ").strip()
+        return rel_path
+
+    def _build_required_actions(self, risk_hits: list[dict]) -> list[dict]:
+        actions = []
+        for idx, hit in enumerate(risk_hits, start=1):
+            actions.append({
+                "id": f"RA-{idx:03d}",
+                "kind": "pitfall",
+                "path": hit["path"],
+                "summary": f"Review and handle: {self._knowledge_title(hit['path'])}",
+                "status": "pending",
+            })
+        if risk_hits:
+            actions.append({
+                "id": f"RA-{len(actions) + 1:03d}",
+                "kind": "discussion",
+                "path": "knowledge\\discussions",
+                "summary": "If the task has uncertain or non-final conclusions, stage them as discussion/needs-review instead of publishing as fact.",
+                "status": "pending",
+            })
+        return actions
+
+    def parse_required_actions(self, task_id: str | None = None) -> list[dict]:
+        task_id = self.resolve_task(task_id)
+        if not task_id:
+            return []
+        preflight_path = self.root / "tasks" / task_id / "preflight.md"
+        if not preflight_path.exists():
+            return []
+        actions = []
+        for line in preflight_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+            match = ACTION_RE.match(line.strip())
+            if match:
+                item = match.groupdict()
+                actions.append(item)
+        return actions
+
+    def resolve_required_action(self, task_id: str | None, action_id: str, status: str = "resolved", note: str = "") -> list[dict]:
+        task_id = self.resolve_task(task_id)
+        if not task_id:
+            raise ValueError("no task")
+        if status not in ACTION_STATUSES:
+            raise ValueError(f"invalid action status: {status}")
+        preflight_path = self.root / "tasks" / task_id / "preflight.md"
+        if not preflight_path.exists():
+            raise FileNotFoundError(f"missing preflight.md for task {task_id}")
+        lines = preflight_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        changed = []
+        updated_lines = []
+        for line in lines:
+            match = ACTION_RE.match(line.strip())
+            if match and (action_id == "all" or match.group("id") == action_id):
+                suffix = f" -- {note}" if note else ""
+                line = f"- [{status}] {match.group('id')} ({match.group('kind')}) {match.group('path')} :: {match.group('summary')}{suffix}"
+                changed.append(match.group("id"))
+            updated_lines.append(line)
+        if not changed and action_id == "all":
+            self.append_log(task_id, f"required action all marked {status}: no matching actions")
+            return self.parse_required_actions(task_id)
+        if not changed:
+            raise KeyError(f"required action not found: {action_id}")
+        preflight_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+        self.append_log(task_id, f"required action {action_id} marked {status}: {note or 'no note'}")
+        self.record_event("task.required_action", {"task_id": task_id, "action_id": action_id, "status": status, "note": note, "changed": changed})
+        return self.parse_required_actions(task_id)
+
     def preflight(self, task_id: str | None, goal: str) -> dict:
         task_id = self.resolve_task(task_id)
         if not task_id:
             task_id = self.create_task(goal, goal)
         hits = self.search(goal, limit=10)
         risk_hits = [h for h in hits if "pitfalls" in h["path"]]
+        required_actions = self._build_required_actions(risk_hits)
+        discussion_required = bool(risk_hits)
         warnings = []
         if not goal.strip():
             gate = "FAIL"
@@ -265,16 +343,23 @@ class KnowledgeStore:
             warnings.append("related pitfall knowledge requires review")
         else:
             gate = "PASS"
-        lines = ["# Preflight", "", f"Task: {task_id}", f"Goal: {goal}", f"Gate: {gate}", "", "## Warnings"]
+        lines = ["# Preflight", "", "Preflight-Version: 2", f"Task: {task_id}", f"Goal: {goal}", f"Gate: {gate}", "", "## Warnings"]
         lines += [f"- {w}" for w in warnings] or ["- None"]
+        lines += ["", "## Discussion Routing", f"- discussion_required: {'yes' if discussion_required else 'no'}", "- discussion_paths:"]
+        lines += ["  - knowledge\\discussions"] if discussion_required else ["  - None"]
+        lines += ["", "## Required Actions"]
+        if required_actions:
+            lines += [f"- [{a['status']}] {a['id']} ({a['kind']}) {a['path']} :: {a['summary']}" for a in required_actions]
+        else:
+            lines += ["- None"]
         lines += ["", "## Related Knowledge"]
         lines += [f"- {h['path']} (score={h['score']})" for h in hits] or ["- None"]
         lines += ["", "## Risk Hits"]
         lines += [f"- {h['path']}" for h in risk_hits] or ["- None"]
         (self.root / "tasks" / task_id / "preflight.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
         self.append_log(task_id, f"preflight generated: Gate={gate}, related={len(hits)}, risks={len(risk_hits)}")
-        self.record_event("task.preflight", {"task_id": task_id, "gate": gate, "hits": hits, "warnings": warnings})
-        return {"task_id": task_id, "gate": gate, "hits": hits, "risk_hits": risk_hits, "warnings": warnings}
+        self.record_event("task.preflight", {"task_id": task_id, "gate": gate, "hits": hits, "warnings": warnings, "required_actions": required_actions})
+        return {"task_id": task_id, "gate": gate, "hits": hits, "risk_hits": risk_hits, "warnings": warnings, "required_actions": required_actions, "discussion_required": discussion_required}
 
     def gate(self, task_id: str | None = None) -> dict:
         self.init()
@@ -289,6 +374,9 @@ class KnowledgeStore:
         preflight = (task_dir / "preflight.md").read_text(encoding="utf-8", errors="ignore") if (task_dir / "preflight.md").exists() else ""
         if "Gate: PASS" not in preflight and "Gate: NEEDS-REVIEW" not in preflight:
             errors.append("preflight gate is not PASS or NEEDS-REVIEW")
+        unresolved_actions = [a for a in self.parse_required_actions(task_id) if a["status"] not in ACTION_CLOSED_STATUSES]
+        if unresolved_actions:
+            errors.append(f"unresolved preflight required actions: {[a['id'] for a in unresolved_actions]}")
         evidence_dir = task_dir / "evidence"
         valid_evidence = []
         if evidence_dir.exists():
