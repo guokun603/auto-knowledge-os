@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import hashlib
+import os
 from dataclasses import dataclass
 from typing import Any
 
@@ -32,8 +33,12 @@ class Mem0Adapter:
     def __init__(self, store: KnowledgeStore) -> None:
         self.store = store
         try:
+            mem0_dir = store.root / "memory" / "mem0_home"
+            mem0_dir.mkdir(parents=True, exist_ok=True)
+            os.environ.setdefault("MEM0_DIR", str(mem0_dir))
+            os.environ.setdefault("MEM0_TELEMETRY", "False")
             import mem0  # type: ignore  # noqa: F401
-            self.status = AdapterStatus("mem0", "external-sdk-local-store", True, "mem0 import available; SQLite remains local durable fallback")
+            self.status = AdapterStatus("mem0", "external-sdk-local-store", True, f"mem0 import available; MEM0_DIR={mem0_dir}; SQLite remains local durable fallback")
         except Exception as exc:
             self.status = AdapterStatus("mem0", "sqlite-fallback", False, str(exc))
 

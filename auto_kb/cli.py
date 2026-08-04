@@ -2,7 +2,9 @@
 
 import argparse
 import json
+import os
 import sys
+from pathlib import Path
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -20,7 +22,7 @@ def emit(obj) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="auto-kb")
-    p.add_argument("--root", default=".")
+    p.add_argument("--root", default=None)
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("init")
     n = sub.add_parser("new-task"); n.add_argument("title"); n.add_argument("--goal", default=None)
@@ -33,7 +35,10 @@ def main(argv: list[str] | None = None) -> int:
     wf = sub.add_parser("workflow"); wf.add_argument("--title", required=True); wf.add_argument("--goal", required=True); wf.add_argument("--conclusion", default=None)
     sub.add_parser("status")
     args = p.parse_args(argv)
-    store = KnowledgeStore(args.root)
+    root = Path(args.root or os.environ.get("AUTO_KB_ROOT") or ".").resolve()
+    if root.exists():
+        os.chdir(root)
+    store = KnowledgeStore(root)
     if args.cmd == "init":
         store.init(); emit({"ok": True, "root": str(store.root), "db": str(store.db_path)}); return 0
     if args.cmd == "new-task":
@@ -53,10 +58,17 @@ def main(argv: list[str] | None = None) -> int:
         if not task_id: raise SystemExit("no task")
         path = store.add_evidence(task_id, args.name, args.content); emit({"evidence": str(path.relative_to(store.root))}); return 0
     if args.cmd == "workflow":
-        result = KnowledgeClosureWorkflow(args.root).run(args.title, args.goal, args.conclusion); emit(result.__dict__); return 0 if result.gate["pass"] else 2
+        result = KnowledgeClosureWorkflow(root).run(args.title, args.goal, args.conclusion); emit(result.__dict__); return 0 if result.gate["pass"] else 2
     if args.cmd == "status":
         store.init(); statuses = [Mem0Adapter(store).status, GraphitiAdapter(store).status, VectorAdapter(store).status, LangGraphAdapter(store).status]
-        emit({"current_task": store.get_current_task(), "adapters": [s.__dict__ for s in statuses]}); return 0
+        from .mcp_server import MCP_IMPORT_ERROR, MCP_SDK_AVAILABLE
+        mcp_status = {
+            "name": "mcp",
+            "mode": "standard-sdk" if MCP_SDK_AVAILABLE else "json-rpc-fallback",
+            "available": MCP_SDK_AVAILABLE,
+            "detail": "mcp import available" if MCP_SDK_AVAILABLE else str(MCP_IMPORT_ERROR),
+        }
+        emit({"current_task": store.get_current_task(), "adapters": [s.__dict__ for s in statuses], "mcp": mcp_status}); return 0
     return 1
 
 if __name__ == "__main__":

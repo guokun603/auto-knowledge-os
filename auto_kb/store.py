@@ -227,7 +227,6 @@ class KnowledgeStore:
             con.execute("insert into vector_docs(path,content,tags,created_at) values(?,?,?,?)", (rel, content, "", now()))
 
     def search(self, query: str, limit: int = 8) -> list[dict]:
-        self.init()
         raw_terms = [t.lower() for t in re.findall(r"[\w\u4e00-\u9fff]+", query)]
         terms: list[str] = []
         for term in raw_terms:

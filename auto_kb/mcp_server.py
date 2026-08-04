@@ -6,9 +6,22 @@ import os
 import sys
 from typing import Any
 
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult, TextContent, Tool
+try:
+    from mcp.server import Server
+    from mcp.server.stdio import stdio_server
+    from mcp.types import CallToolRequestParams, CallToolResult, ListToolsResult, TextContent, Tool
+    MCP_SDK_AVAILABLE = True
+    MCP_IMPORT_ERROR: Exception | None = None
+except Exception as exc:
+    Server = None  # type: ignore[assignment]
+    stdio_server = None  # type: ignore[assignment]
+    CallToolRequestParams = Any  # type: ignore[misc,assignment]
+    CallToolResult = Any  # type: ignore[misc,assignment]
+    ListToolsResult = Any  # type: ignore[misc,assignment]
+    TextContent = None  # type: ignore[assignment]
+    Tool = None  # type: ignore[assignment]
+    MCP_SDK_AVAILABLE = False
+    MCP_IMPORT_ERROR = exc
 
 from .store import KnowledgeStore
 from .workflow import KnowledgeClosureWorkflow
@@ -124,7 +137,12 @@ def _json_text(value: Any) -> str:
 
 
 def create_standard_server(root: str | None = None) -> Server:
+    if not MCP_SDK_AVAILABLE:
+        raise RuntimeError(f"mcp SDK is not installed; JSON-RPC fallback remains available: {MCP_IMPORT_ERROR}")
+
     root = root or os.environ.get("AUTO_KB_ROOT") or "."
+    if os.path.exists(root):
+        os.chdir(root)
     store = KnowledgeStore(root)
     store.init()
 
@@ -168,7 +186,10 @@ async def run_standard_server(root: str | None = None) -> None:
 
 
 def main() -> int:
-    store = KnowledgeStore(os.environ.get("AUTO_KB_ROOT") or ".")
+    root = os.environ.get("AUTO_KB_ROOT") or "."
+    if os.path.exists(root):
+        os.chdir(root)
+    store = KnowledgeStore(root)
     store.init()
     for line in sys.stdin:
         if line.strip():

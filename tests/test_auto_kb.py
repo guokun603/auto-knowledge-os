@@ -4,10 +4,27 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import os
 from pathlib import Path
 
 from auto_kb.store import KnowledgeStore
 from auto_kb.workflow import KnowledgeClosureWorkflow
+
+
+def run_python(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.update(kwargs.pop("env_overrides", {}))
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
+    return subprocess.run(
+        [sys.executable, *args],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        env=env,
+        **kwargs,
+    )
 
 
 class AutoKBTests(unittest.TestCase):
@@ -83,14 +100,31 @@ class AutoKBTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             project = str(Path(__file__).resolve().parents[1])
             script = f"import os, sys; sys.path.insert(0, {project!r}); os.chdir(sys.argv[1]); from auto_kb.mcp_server import handle; from auto_kb.store import KnowledgeStore; s=KnowledgeStore('.'); s.init(); print(handle({{'id':1,'method':'tools/list'}}, s))"
-            proc = subprocess.run([sys.executable, "-c", script, td], text=True, capture_output=True, check=True)
+            proc = run_python(["-c", script, td], check=True)
             self.assertIn("kb.search", proc.stdout)
 
     def test_cli_workflow_command(self):
         with tempfile.TemporaryDirectory() as td:
-            proc = subprocess.run([sys.executable, "-m", "auto_kb.cli", "--root", td, "workflow", "--title", "cli", "--goal", "cli evidence", "--conclusion", "cli publishes knowledge"], text=True, capture_output=True)
+            proc = run_python(["-m", "auto_kb.cli", "--root", td, "workflow", "--title", "cli", "--goal", "cli evidence", "--conclusion", "cli publishes knowledge"])
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn('"pass": true', proc.stdout.lower())
+
+    def test_cli_uses_auto_kb_root_from_other_cwd(self):
+        with tempfile.TemporaryDirectory() as root_td, tempfile.TemporaryDirectory() as cwd_td:
+            store = KnowledgeStore(root_td)
+            store.init()
+            cid = store.stage_candidate("AUTO_KB_ROOT lets CLI run outside the repository", "runbook", evidence="unit test")
+            store.publish_candidate(cid)
+            proc = run_python(
+                ["-m", "auto_kb.cli", "search", "AUTO_KB_ROOT"],
+                cwd=cwd_td,
+                env_overrides={
+                    "AUTO_KB_ROOT": root_td,
+                    "PYTHONPATH": str(Path(__file__).resolve().parents[1]),
+                },
+            )
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            self.assertIn("AUTO_KB_ROOT lets CLI run outside the repository", proc.stdout)
 
 
 if __name__ == "__main__":

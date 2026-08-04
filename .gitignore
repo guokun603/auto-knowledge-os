@@ -13,10 +13,8 @@ __pycache__/
 !.env.example
 
 # Runtime state and local indexes
-.auto_kb/current_task
-.auto_kb/full-auto-audit.json
-memory/*.db
-memory/*.db-*
+.auto_kb/
+memory/
 vector/qdrant_local/
 graph/*.db
 graph/*.db-*
