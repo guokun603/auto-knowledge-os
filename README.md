@@ -37,29 +37,27 @@ It is especially useful for:
 
 ### Install On Windows
 
-Clone or download the repository, then place it where you want the central knowledge base to live.
-
-This project was designed around a Windows path like:
+Clone or download the repository, then place it where you want the central knowledge base to live. All examples below use `<project-root>` as a placeholder — substitute your actual repository path.
 
 ```text
-G:\AI 架构
+<project-root>   e.g.  C:\auto-knowledge-os   or   G:\AI 架构
 ```
 
 Run the first-machine setup:
 
 ```powershell
-G:\AI 架构\换电脑初始化.bat
+<project-root>\换电脑初始化.bat
 ```
 
 The setup script creates or repairs:
 
 - project `.venv`
 - local SQLite state
-- `G:\AI_KB` ASCII junction alias
+- an ASCII junction alias (optional; avoids Windows subprocess encoding issues with non-ASCII paths)
 - global Codex `AGENTS.md`
 - global Codex MCP server config
 
-`G:\AI_KB` points to `G:\AI 架构`. The alias avoids Windows subprocess encoding problems.
+If your project path contains non-ASCII characters (e.g. Chinese), the setup creates an ASCII-only junction alias so that subprocess calls don't mangle the path. If your path is already ASCII-only, the alias step is a no-op.
 
 ### Connect Codex From Any Folder
 
@@ -81,14 +79,14 @@ Codex should use the global MCP server named:
 central_auto_kb
 ```
 
-If MCP is unavailable, Codex should fall back to the files and scripts under `G:\AI 架构`.
+If MCP is unavailable, Codex should fall back to the files and scripts under `<project-root>`.
 
 ### Daily One-Click Menu
 
-Run:
+Run from the project directory:
 
 ```powershell
-Set-Location -LiteralPath "G:\AI 架构"
+Set-Location -LiteralPath "<project-root>"
 powershell -ExecutionPolicy Bypass -File ".\一键知识库.ps1"
 ```
 
@@ -101,6 +99,13 @@ Menu options:
 5. Start the MCP server
 
 ### Manual CLI Workflow
+
+All CLI commands work from the project root. If calling from outside, set `AUTO_KB_ROOT`:
+
+```powershell
+$env:AUTO_KB_ROOT = "<project-root>"
+$env:PYTHONPATH = "<project-root>"
+```
 
 Create a task:
 
@@ -163,8 +168,8 @@ python -m auto_kb.cli search "preflight"
 From outside the repository:
 
 ```powershell
-$env:AUTO_KB_ROOT = "G:\AI_KB"
-$env:PYTHONPATH = "G:\AI_KB"
+$env:AUTO_KB_ROOT = "<project-root>"
+$env:PYTHONPATH = "<project-root>"
 python -m auto_kb.cli search "project boundary"
 ```
 
@@ -184,10 +189,20 @@ python -m auto_kb.cli status --deep
 
 Use `status` for normal health checks. Use `status --deep` only when you explicitly want to initialize optional SDK clients.
 
+### Dry-Run Workflow (no filesystem writes)
+
+Preview what preflight would flag without creating task directories or writing evidence:
+
+```powershell
+python -m auto_kb.cli workflow --title "test" --goal "test goal" --dry-run
+```
+
+The MCP `workflow.run` tool also accepts `dry_run: true`.
+
 ### Run Tests
 
 ```powershell
-Set-Location -LiteralPath "G:\AI 架构"
+Set-Location -LiteralPath "<project-root>"
 python -m unittest discover -s tests -v
 ```
 
@@ -199,16 +214,17 @@ fails. The `tools\` scripts detect this and fall back to system Python; to rebui
 Run the full audit:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "G:\AI 架构\tools\full-auto-audit.ps1" -ProjectRoot "G:\AI 架构"
+powershell -ExecutionPolicy Bypass -File "<project-root>\tools\full-auto-audit.ps1" -ProjectRoot "<project-root>"
 ```
 
 Current verification:
 
-- Unit tests: 28 passing tests on 2026-08-05.
+- Unit tests: 35 passing tests (including external adapter smoke tests) on 2026-08-05.
 - Full audit: `tools/full-auto-audit.ps1` writes `.auto_kb/full-auto-audit.json`; it passes only when the current task gate is closed or there is no active task.
 - Cross-directory central knowledge search: verified through `central_auto_kb`.
 - MCP server: `central_auto_kb`, with `mcp>=2.0,<3.0`.
-- Qdrant: disabled by default because the local hash embedding fallback is not semantic; keyword search is the default. Set `AUTO_KB_ENABLE_QDRANT=1` only for experiments.
+- Qdrant: disabled by default because the local hash embedding fallback is not semantic; keyword search is the default (backed by SQLite FTS5 when available). Set `AUTO_KB_ENABLE_QDRANT=1` only for experiments.
+
 ### Repository Layout
 
 ```text
@@ -219,9 +235,12 @@ hooks/         Utility hook scripts
 gates/         Gate rule documents
 workflows/     Workflow graph entrypoints
 mcp-server/    MCP compatibility entrypoint
-tests/         Unit tests
+tests/         Unit tests (35 tests)
 vector/        Vector configuration, not generated local indexes
 portable/      Files for linking another folder to the central KB
+.github/       CI workflows (GitHub Actions)
+pyproject.toml Project metadata and packaging
+LICENSE        MIT License
 ```
 
 ### What Not To Upload
@@ -284,16 +303,16 @@ AI 对话里形成的经验，不能只留在聊天记录里。
 
 ### 第一次安装
 
-把项目放到一个固定目录，例如：
+把项目放到一个固定目录。以下示例用 `<project-root>` 代表你的实际路径（例如 `C:\auto-knowledge-os` 或 `G:\AI 架构`），请替换成你的真实路径：
 
 ```text
-G:\AI 架构
+<project-root>
 ```
 
 第一次使用，运行：
 
 ```powershell
-G:\AI 架构\换电脑初始化.bat
+<project-root>\换电脑初始化.bat
 ```
 
 它会做这些事：
@@ -301,11 +320,11 @@ G:\AI 架构\换电脑初始化.bat
 - 创建或修复 `.venv`
 - 安装 Python 依赖
 - 初始化本地数据库
-- 创建 `G:\AI_KB` 英文路径别名
+- 如果项目路径含中文等非 ASCII 字符，创建 ASCII 英文路径别名
 - 写入 Codex 全局 `AGENTS.md`
 - 写入 Codex 全局 MCP 配置
 
-`G:\AI_KB` 指向真实目录 `G:\AI 架构`，主要是为了避免 Windows 中文路径在子进程里乱码。
+如果你的路径本身是纯英文（如 `C:\auto-kb`），别名步骤会跳过，不影响使用。
 
 ### 让 Codex 在任意文件夹连接知识库
 
@@ -332,7 +351,7 @@ central_auto_kb
 如果 MCP 不可用，就退回直接读：
 
 ```text
-G:\AI 架构\knowledge
+<project-root>\knowledge
 ```
 
 ### 日常最简单用法
@@ -340,7 +359,7 @@ G:\AI 架构\knowledge
 打开 PowerShell：
 
 ```powershell
-Set-Location -LiteralPath "G:\AI 架构"
+Set-Location -LiteralPath "<project-root>"
 powershell -ExecutionPolicy Bypass -File ".\一键知识库.ps1"
 ```
 
@@ -355,6 +374,13 @@ powershell -ExecutionPolicy Bypass -File ".\一键知识库.ps1"
 新手优先用这个菜单。
 
 ### 手动跑一次完整任务
+
+从外部调用时先设环境变量：
+
+```powershell
+$env:AUTO_KB_ROOT = "<project-root>"
+$env:PYTHONPATH = "<project-root>"
+```
 
 创建任务：
 
@@ -470,7 +496,7 @@ python -m auto_kb.cli status --deep
 跑单元测试：
 
 ```powershell
-Set-Location -LiteralPath "G:\AI 架构"
+Set-Location -LiteralPath "<project-root>"
 python -m unittest discover -s tests -v
 ```
 
@@ -481,14 +507,15 @@ python -m unittest discover -s tests -v
 跑完整审计：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "G:\AI 架构\tools\full-auto-audit.ps1" -ProjectRoot "G:\AI 架构"
+powershell -ExecutionPolicy Bypass -File "<project-root>\tools\full-auto-audit.ps1" -ProjectRoot "<project-root>"
 ```
 
 当前本机验证状态：
 
-- 2026-08-05：单元测试 28 个通过。
+- 2026-08-05：单元测试 35 个通过（含外部适配器冒烟测试）。
 - 完整体检会写入 `.auto_kb/full-auto-audit.json`；有当前任务时，必须先让当前任务 gate 通过。
-- Qdrant 默认关闭，因为当前本地 hash embedding 不具备真实语义检索能力；默认使用关键词检索。
+- Qdrant 默认关闭，因为当前本地 hash embedding 不具备真实语义检索能力；默认使用关键词检索（SQLite FTS5 可用时优先使用全文检索）。
+
 ### 哪些文件不要上传
 
 这些是本地运行状态，不要传 GitHub：
@@ -518,10 +545,13 @@ tests/
 README.md
 AGENTS.md
 requirements.txt
+pyproject.toml
+LICENSE
+.github/
 ```
 
 公开仓库推送前，要检查 `knowledge/`，因为里面可能有个人偏好、本机路径和私人决策。
 
 ## License
 
-No license has been declared yet. Add a license before making the repository broadly reusable by others.
+MIT — see [LICENSE](./LICENSE).

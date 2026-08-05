@@ -9,14 +9,16 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
 
 if (!(Test-Path -LiteralPath $ProjectRoot)) {
-    throw "找不到中央知识库目录：$ProjectRoot。请确认移动硬盘已挂载，或用 -ProjectRoot 传入真实目录。"
+    throw "找不到中央知识库目录：$ProjectRoot。请确认目录存在，或用 -ProjectRoot 传入真实目录。"
 }
 $ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 
 New-Item -ItemType Directory -Path $CodexHome -Force | Out-Null
 
 if (!$AliasRoot) {
-    $AliasRoot = Join-Path ([System.IO.Path]::GetPathRoot($ProjectRoot)) "AI_KB"
+    # Default alias inside Codex home — no admin privileges needed.
+    # The old default (drive-root junction like G:\AI_KB) required elevation.
+    $AliasRoot = Join-Path $CodexHome "AI_KB"
 }
 
 function Ensure-AliasRoot([string]$Path, [string]$Target) {

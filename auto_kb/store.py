@@ -125,7 +125,29 @@ class KnowledgeStore:
             )
             con.execute("delete from vector_docs where id not in (select max(id) from vector_docs group by path)")
             con.execute("create unique index if not exists idx_vector_docs_path on vector_docs(path)")
+            self._init_fts(con)
         self._seed_files()
+
+    def _init_fts(self, con: sqlite3.Connection) -> None:
+        """Create FTS5 index if available; silently no-op otherwise."""
+        try:
+            con.execute("create virtual table if not exists knowledge_fts using fts5(path, content, tokenize='unicode61')")
+            # Backfill from existing knowledge files if FTS is empty but vector_docs has content
+            row = con.execute("select count(*) as cnt from knowledge_fts").fetchone()
+            if row and row["cnt"] == 0:
+                docs = con.execute("select path, content from vector_docs").fetchall()
+                for doc in docs:
+                    cleaned = strip_template_noise(doc["content"])
+                    con.execute("insert into knowledge_fts(path, content) values(?, ?)", (doc["path"], cleaned))
+        except sqlite3.OperationalError:
+            pass  # FTS5 not available in this SQLite build; keyword search remains the fallback
+
+    def _fts_available(self, con: sqlite3.Connection) -> bool:
+        try:
+            con.execute("select count(*) from knowledge_fts")
+            return True
+        except sqlite3.OperationalError:
+            return False
 
     def _seed_files(self) -> None:
         marker = self.root / ".auto_kb" / "seeded"
@@ -329,8 +351,29 @@ class KnowledgeStore:
         with self.connect() as con:
             con.execute("delete from vector_docs where path=?", (rel,))
             con.execute("insert into vector_docs(path,content,tags,created_at) values(?,?,?,?)", (rel, content, "", now()))
+            if self._fts_available(con):
+                con.execute("delete from knowledge_fts where path=?", (rel,))
+                con.execute("insert into knowledge_fts(path, content) values(?, ?)", (rel, strip_template_noise(content)))
 
     def search(self, query: str, limit: int = 8) -> list[dict]:
+        # Prefer FTS5 full-text search when available (BM25 ranking, O(log n)).
+        with self.connect() as con:
+            if self._fts_available(con):
+                try:
+                    fts_query = self._build_fts_query(query)
+                    rows = con.execute(
+                        "select path, content, rank from knowledge_fts where knowledge_fts match ? order by rank limit ?",
+                        (fts_query, limit),
+                    ).fetchall()
+                    if rows:
+                        return [
+                            {"score": round(1.0 / max(float(r["rank"]), 0.001), 4), "path": r["path"], "preview": r["content"][:300]}
+                            for r in rows
+                        ]
+                except sqlite3.OperationalError:
+                    pass  # Fall through to keyword search on FTS syntax error
+
+        # Keyword fallback for when FTS5 is unavailable or throws on special characters.
         raw_terms = [t.lower() for t in re.findall(r"[\w\u4e00-\u9fff]+", query)]
         weighted_terms: list[tuple[str, int]] = []
         for term in raw_terms:
@@ -353,6 +396,14 @@ class KnowledgeStore:
                 hits.append((score, path, text[:300]))
         hits.sort(key=lambda x: x[0], reverse=True)
         return [{"score": s, "path": str(p.relative_to(self.root)), "preview": prev} for s, p, prev in hits[:limit]]
+
+    def _build_fts_query(self, query: str) -> str:
+        """Build a safe FTS5 query string from user input."""
+        terms = [t for t in re.findall(r"[\w\u4e00-\u9fff]+", query) if len(t) >= 2]
+        if not terms:
+            terms = [query.strip().replace("'", "''")]
+        # Join with OR so any matching term contributes to rank.
+        return " OR ".join(f'"{t}"' for t in terms[:8])
     def _knowledge_title(self, rel_path: str) -> str:
         path = self.root / rel_path
         if not path.exists():
@@ -426,10 +477,15 @@ class KnowledgeStore:
         self.append_log(task_id, f"required action {action_id} marked {status}: {note or 'no note'}")
         self.record_event("task.required_action", {"task_id": task_id, "action_id": action_id, "status": status, "note": note, "changed": changed})
         return self.parse_required_actions(task_id)
-    def preflight(self, task_id: str | None, goal: str) -> dict:
+    def preflight(self, task_id: str | None, goal: str, dry_run: bool = False) -> dict:
         task_id = self.resolve_task(task_id)
+        created = False
         if not task_id:
-            task_id = self.create_task(goal, goal)
+            if dry_run:
+                task_id = f"DRY-RUN-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            else:
+                task_id = self.create_task(goal, goal)
+                created = True
         hits = self.search(goal, limit=10)
         matched_risks = [h for h in hits if "pitfalls" in h["path"]]
         # Only the highest-scoring pitfalls become blocking obligations. The rest
@@ -437,7 +493,7 @@ class KnowledgeStore:
         risk_hits = matched_risks[:MAX_RISK_HITS]
         deferred_risks = matched_risks[MAX_RISK_HITS:]
         required_actions = self._build_required_actions(risk_hits)
-        discussion_required = bool(risk_hits)
+        discussion_required = bool(risk_hits) or len(goal.strip()) < 6
         warnings = []
         if not goal.strip():
             gate = "FAIL"
@@ -465,10 +521,14 @@ class KnowledgeStore:
         lines += [f"- {h['path']}" for h in risk_hits] or ["- None"]
         lines += ["", f"## Deferred Risk Hits (context only, not gate-blocking; cap={MAX_RISK_HITS})"]
         lines += [f"- {h['path']} (score={h['score']})" for h in deferred_risks] or ["- None"]
-        (self.root / "tasks" / task_id / "preflight.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        self.append_log(task_id, f"preflight generated: Gate={gate}, related={len(hits)}, risks={len(risk_hits)}, deferred={len(deferred_risks)}")
-        self.record_event("task.preflight", {"task_id": task_id, "gate": gate, "hits": hits, "warnings": warnings, "required_actions": required_actions, "deferred_risks": deferred_risks})
-        return {"task_id": task_id, "gate": gate, "hits": hits, "risk_hits": risk_hits, "deferred_risks": deferred_risks, "warnings": warnings, "required_actions": required_actions, "discussion_required": discussion_required}
+        if not dry_run:
+            (self.root / "tasks" / task_id / "preflight.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+            self.append_log(task_id, f"preflight generated: Gate={gate}, related={len(hits)}, risks={len(risk_hits)}, deferred={len(deferred_risks)}")
+            self.record_event("task.preflight", {"task_id": task_id, "gate": gate, "hits": hits, "warnings": warnings, "required_actions": required_actions, "deferred_risks": deferred_risks})
+        result = {"task_id": task_id, "gate": gate, "hits": hits, "risk_hits": risk_hits, "deferred_risks": deferred_risks, "warnings": warnings, "required_actions": required_actions, "discussion_required": discussion_required}
+        if dry_run:
+            result["dry_run"] = True
+        return result
 
     def gate(self, task_id: str | None = None) -> dict:
         self.init()

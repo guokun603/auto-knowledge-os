@@ -80,7 +80,7 @@ function Run-Python($PythonCommand, [string[]]$Arguments) {
 
 Write-Step "检查项目目录"
 if (!(Test-Path -LiteralPath $ProjectRoot)) {
-    throw "找不到项目目录：$ProjectRoot。请确认移动硬盘盘符仍然是 G:。"
+    throw "找不到项目目录：$ProjectRoot。请确认目录存在，或用 -ProjectRoot 传入正确路径。"
 }
 Set-Location -LiteralPath $ProjectRoot
 

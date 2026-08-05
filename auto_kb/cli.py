@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     gt = sub.add_parser("gate"); gt.add_argument("--task", default="current")
     ev = sub.add_parser("evidence"); ev.add_argument("--task", default="current"); ev.add_argument("--name", required=True); ev.add_argument("--content", required=True)
     ra = sub.add_parser("resolve-action"); ra.add_argument("--task", default="current"); ra.add_argument("--id", required=True); ra.add_argument("--status", default="resolved", choices=["pending", "resolved", "needs-review", "rejected"]); ra.add_argument("--note", default="")
-    wf = sub.add_parser("workflow"); wf.add_argument("--title", required=True); wf.add_argument("--goal", required=True); wf.add_argument("--conclusion", default=None)
+    wf = sub.add_parser("workflow"); wf.add_argument("--title", required=True); wf.add_argument("--goal", required=True); wf.add_argument("--conclusion", default=None); wf.add_argument("--dry-run", action="store_true")
     status_parser = sub.add_parser("status"); status_parser.add_argument("--deep", action="store_true")
     args = p.parse_args(argv)
     root = Path(args.root or os.environ.get("AUTO_KB_ROOT") or ".").resolve()
@@ -64,7 +64,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "resolve-action":
         emit({"required_actions": store.resolve_required_action(args.task, args.id, args.status, args.note)}); return 0
     if args.cmd == "workflow":
-        result = KnowledgeClosureWorkflow(root).run(args.title, args.goal, args.conclusion); emit(result.__dict__); return 0 if result.gate["pass"] else 2
+        result = KnowledgeClosureWorkflow(root).run(args.title, args.goal, args.conclusion, dry_run=args.dry_run); emit(result.__dict__); return 0 if result.gate["pass"] else 2
     if args.cmd == "status":
         store.init()
         statuses = [Mem0Adapter(store).status, GraphitiAdapter(store).status, VectorAdapter(store).status, LangGraphAdapter(store).status] if args.deep else probe_adapter_statuses(store)

@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from .adapters import GraphitiAdapter, LangGraphAdapter, Mem0Adapter, VectorAdapter
@@ -37,8 +38,12 @@ class KnowledgeClosureWorkflow:
             "vector": self.vector.status.__dict__,
         }
 
-    def run(self, title: str, goal: str, conclusion: str | None = None) -> WorkflowResult:
+    def run(self, title: str, goal: str, conclusion: str | None = None, dry_run: bool = False) -> WorkflowResult:
         self.store.init()
+        if dry_run:
+            task_id = f"DRY-RUN-{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+            preflight = self.store.preflight(None, goal, dry_run=True)
+            return WorkflowResult(task_id=task_id, preflight=preflight, gate={"pass": preflight["gate"] in ("PASS", "NEEDS-REVIEW"), "dry_run": True, "task_id": task_id}, published=[], adapters=self.adapter_statuses())
         task_id = self.store.create_task(title, goal)
         self.checkpoint("task_created", {"task_id": task_id, "goal": goal})
         self.mem0.add("last_goal", goal, scope="task")

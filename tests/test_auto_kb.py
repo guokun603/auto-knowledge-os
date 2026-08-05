@@ -11,7 +11,10 @@ os.environ.setdefault("AUTO_KB_DISABLE_EXTERNAL", "1")
 
 from auto_kb.store import KnowledgeStore, MAX_RISK_HITS
 from auto_kb.workflow import KnowledgeClosureWorkflow
-from auto_kb.adapters import VectorAdapter
+from auto_kb.adapters import (
+    GraphitiAdapter, LangGraphAdapter, Mem0Adapter, VectorAdapter,
+    probe_adapter_statuses,
+)
 
 
 def run_python(args: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
@@ -360,6 +363,91 @@ class AutoKBTests(unittest.TestCase):
             self.assertEqual(store.search("scope"), [])
             self.assertEqual(store.search("tags"), [])
             self.assertTrue(store.search("snowmelt"))
+
+
+class ExternalAdapterSmokeTests(unittest.TestCase):
+    """Smoke-test adapter code paths that are skipped when AUTO_KB_DISABLE_EXTERNAL=1.
+
+    These tests do NOT require the external SDKs to be installed. They verify that
+    the constructor and status probes don't crash when the SDKs are absent, and
+    that the fallback paths are correctly wired.
+    """
+
+    def setUp(self):
+        import os as _os
+        _os.environ.pop("AUTO_KB_DISABLE_EXTERNAL", None)
+
+    def tearDown(self):
+        import os as _os
+        _os.environ["AUTO_KB_DISABLE_EXTERNAL"] = "1"
+
+    def test_probe_adapter_statuses_does_not_crash(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            statuses = probe_adapter_statuses(store)
+            self.assertEqual(len(statuses), 4)
+            names = {s.name for s in statuses}
+            self.assertSetEqual(names, {"mem0", "graphiti", "qdrant", "langgraph"})
+            for s in statuses:
+                self.assertIn(s.mode, {
+                    "external-sdk-local-store", "sqlite-fallback",
+                    "external-sdk-local-edges",
+                    "external-local-qdrant", "sqlite-keyword-primary", "sqlite-keyword-fallback",
+                    "external-stategraph", "local-checkpoint-graph",
+                })
+
+    def test_mem0_adapter_constructs_without_crash(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            adapter = Mem0Adapter(store)
+            self.assertEqual(adapter.status.name, "mem0")
+            self.assertIsInstance(adapter.status.available, bool)
+
+    def test_graphiti_adapter_constructs_without_crash(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            adapter = GraphitiAdapter(store)
+            self.assertEqual(adapter.status.name, "graphiti")
+            self.assertIsInstance(adapter.status.available, bool)
+
+    def test_vector_adapter_constructs_without_crash(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            adapter = VectorAdapter(store)
+            self.assertEqual(adapter.status.name, "qdrant")
+            self.assertIsInstance(adapter.status.available, bool)
+            # Qdrant disabled by default → available is False
+            self.assertFalse(adapter.status.available)
+
+    def test_langgraph_adapter_constructs_without_crash(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            adapter = LangGraphAdapter(store)
+            self.assertEqual(adapter.status.name, "langgraph")
+            self.assertIsInstance(adapter.status.available, bool)
+
+    def test_mem0_adapter_search_uses_sqlite_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            store.add_memory("test_key", "test_value", scope="global")
+            adapter = Mem0Adapter(store)
+            results = adapter.search("test_key", limit=5)
+            self.assertTrue(any("test_key" in str(r.get("key", "")) for r in results))
+
+    def test_graphiti_adapter_query_uses_sqlite_fallback(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            store.add_graph_edge("node-a", "depends_on", "node-b")
+            adapter = GraphitiAdapter(store)
+            results = adapter.query("node-a")
+            self.assertTrue(any(r["relation"] == "depends_on" for r in results))
 
 
 if __name__ == "__main__":

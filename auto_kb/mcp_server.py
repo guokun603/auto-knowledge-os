@@ -123,6 +123,7 @@ TOOL_DEFINITIONS = {
                 "title": {"type": "string"},
                 "goal": {"type": "string"},
                 "conclusion": {"type": "string", "default": ""},
+                "dry_run": {"type": "boolean", "default": False},
             },
             "required": ["title", "goal"],
         },
@@ -142,7 +143,7 @@ def call_tool(store: KnowledgeStore, name: str, args: dict[str, Any]) -> Any:
     if name == "task.gate": return store.gate(args.get("task", "current"))
     if name == "task.resolve_action": return {"required_actions": store.resolve_required_action(args.get("task", "current"), args["id"], args.get("status", "resolved"), args.get("note", ""))}
     if name == "workflow.run":
-        result = KnowledgeClosureWorkflow(str(store.root)).run(args["title"], args["goal"], args.get("conclusion"))
+        result = KnowledgeClosureWorkflow(str(store.root)).run(args["title"], args["goal"], args.get("conclusion"), dry_run=args.get("dry_run", False))
         return result.__dict__
     raise ValueError(f"unknown tool: {name}")
 
@@ -193,7 +194,7 @@ def create_standard_server(root: str | None = None) -> Server:
         )
 
     return Server(
-        "central-auto-kb",
+        "central_auto_kb",
         version="1.0.0",
         instructions=f"Use this server to search and update the central knowledge base at {store.root}.",
         on_list_tools=list_tools,
