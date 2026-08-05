@@ -83,7 +83,7 @@ foreach ($Line in $Lines) {
 }
 
 $VenvPython = Join-Path $AliasRoot ".venv\Scripts\python.exe"
-$McpCommand = if (Test-Path -LiteralPath $VenvPython) { $VenvPython } else { "python" }
+$McpCommand = if ((Test-Path -LiteralPath $VenvPython) -and (& $VenvPython --version *> $null; $LASTEXITCODE -eq 0)) { $VenvPython } else { "python" }
 
 $Block = @(
     '',
@@ -103,5 +103,6 @@ Set-Content -LiteralPath $ConfigPath -Value $Out -Encoding UTF8
 Write-Host "Codex 全局知识库自动链接已安装。" -ForegroundColor Green
 Write-Host "真实数据：$ProjectRoot" -ForegroundColor Green
 Write-Host "自动化别名：$AliasRoot" -ForegroundColor Green
+
 
 

@@ -2,11 +2,21 @@
     [string]$ProjectRoot = "G:\AI 架构"
 )
 
+function Test-ProjectPython {
+    param([string]$Command)
+    try {
+        & $Command --version *> $null
+        return ($LASTEXITCODE -eq 0)
+    } catch {
+        return $false
+    }
+}
+
 function Get-ProjectPython {
     param([string]$Root)
 
     $VenvPython = Join-Path $Root ".venv\Scripts\python.exe"
-    if (Test-Path -LiteralPath $VenvPython) { return $VenvPython }
+    if ((Test-Path -LiteralPath $VenvPython) -and (Test-ProjectPython $VenvPython)) { return $VenvPython }
 
     try {
         python --version *> $null
@@ -18,5 +28,5 @@ function Get-ProjectPython {
         if ($LASTEXITCODE -eq 0) { return "py -3" }
     } catch {}
 
-    throw "未找到 Python。请先运行：换电脑初始化.bat"
+    throw "未找到可用 Python。请先运行：换电脑初始化.bat"
 }

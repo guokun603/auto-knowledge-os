@@ -24,7 +24,7 @@ function Test-Python($Command) {
 
 function Find-Python {
     $ProjectPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-    if (Test-Path -LiteralPath $ProjectPython) { return $ProjectPython }
+    if ((Test-Path -LiteralPath $ProjectPython) -and (Test-Python $ProjectPython)) { return $ProjectPython }
 
     if (Test-Python "python") { return "python" }
 
@@ -91,7 +91,13 @@ if (!$Python) {
 }
 
 if ($UseVenv) {
-    $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
+    $VenvDir = Join-Path $ProjectRoot ".venv"
+    $VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+    if ((Test-Path -LiteralPath $VenvPython) -and !(Test-Python $VenvPython)) {
+        $BrokenPath = Join-Path $ProjectRoot (".venv.broken-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+        Write-Step "发现损坏的项目内虚拟环境，备份后重建 .venv"
+        Move-Item -LiteralPath $VenvDir -Destination $BrokenPath
+    }
     if (!(Test-Path -LiteralPath $VenvPython)) {
         Write-Step "创建项目内虚拟环境 .venv"
         Run-Python $Python @("-m", "venv", ".venv") | Out-Null
@@ -126,4 +132,5 @@ if ($LASTEXITCODE -ne 0) { throw "Codex 全局自动链接安装失败。" }
 Write-Step "完成"
 Write-Host "知识库可用。数据位置：$ProjectRoot" -ForegroundColor Green
 Write-Host "Codex 全局自动链接已配置；重新打开 Codex 或新建任务后生效。" -ForegroundColor Green
+
 
