@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import subprocess
 import sys
@@ -9,7 +9,7 @@ from pathlib import Path
 
 os.environ.setdefault("AUTO_KB_DISABLE_EXTERNAL", "1")
 
-from auto_kb.store import KnowledgeStore
+from auto_kb.store import KnowledgeStore, MAX_RISK_HITS
 from auto_kb.workflow import KnowledgeClosureWorkflow
 from auto_kb.adapters import VectorAdapter
 
@@ -186,7 +186,7 @@ class AutoKBTests(unittest.TestCase):
 
     def test_workflow_runs_full_closure_and_adapters(self):
         with tempfile.TemporaryDirectory() as td:
-            result = KnowledgeClosureWorkflow(td).run("工作流测试", "测试自动化闭环和 evidence", "工作流可以自动发布结论")
+            result = KnowledgeClosureWorkflow(td).run("工作流测试", "plain greenfield workflow", "工作流可以在无风险 preflight 时自动发布结论")
             self.assertTrue(result.gate["pass"], result.gate)
             self.assertTrue(result.published)
             self.assertIn("langgraph", result.adapters)
@@ -216,7 +216,10 @@ class AutoKBTests(unittest.TestCase):
 
     def test_cli_workflow_command(self):
         with tempfile.TemporaryDirectory() as td:
-            proc = run_python(["-m", "auto_kb.cli", "--root", td, "workflow", "--title", "cli", "--goal", "cli evidence", "--conclusion", "cli publishes knowledge"])
+            # The goal must avoid vocabulary used by the seeded PIT-* pitfalls
+            # (goal, plan, run, cli, preflight, evidence...), otherwise preflight
+            # raises Required Actions and the gate correctly refuses to close.
+            proc = run_python(["-m", "auto_kb.cli", "--root", td, "workflow", "--title", "cli", "--goal", "publish durable conclusion automatically", "--conclusion", "cli publishes knowledge"])
             self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
             self.assertIn('"pass": true', proc.stdout.lower())
 
@@ -239,5 +242,127 @@ class AutoKBTests(unittest.TestCase):
             self.assertIn("AUTO_KB_ROOT lets CLI run outside the repository", proc.stdout)
 
 
+    def test_workflow_with_conclusion_does_not_auto_close_required_actions(self):
+        with tempfile.TemporaryDirectory() as td:
+            result = KnowledgeClosureWorkflow(td).run("工作流风险测试", "需要 evidence 的任务", "有结论也不能跳过历史坑复查")
+            self.assertFalse(result.gate["pass"])
+            self.assertFalse(result.published)
+            self.assertIn("unresolved preflight required actions", " ".join(result.gate["errors"]))
+            self.assertTrue(any(action["status"] == "pending" for action in result.preflight["required_actions"]))
+
+    def test_accepted_candidate_publishes_instead_of_disappearing(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            task = store.create_task("accepted 候选测试", "verify accepted publishes")
+            store.preflight(task, "verify accepted publishes")
+            store.resolve_required_action(task, "all", "resolved", "unit test")
+            store.add_evidence(task, "proof.txt", "proof")
+            cid = store.stage_candidate("Accepted candidate writes Markdown", "runbook", evidence="unit test", source_task=task)
+            cand = store.set_candidate_status(cid, "accepted", "unit test accepts it")
+            self.assertEqual(cand.status, "accepted")
+            self.assertTrue(cand.published_path)
+            self.assertTrue((Path(td) / cand.published_path).exists())
+            self.assertTrue(store.gate(task)["pass"])
+
+    def test_publish_number_scans_existing_knowledge_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            existing = Path(td) / "knowledge" / "runbooks" / "KB-0042-existing.md"
+            existing.write_text("# Existing\n\n## Conclusion\nExisting\n", encoding="utf-8")
+            task = store.create_task("KB 编号测试", "verify numbering")
+            cid = store.stage_candidate("Next KB number ignores sqlite id", "runbook", evidence="unit test", source_task=task)
+            path = store.publish_candidate(cid)
+            self.assertTrue(path.name.startswith("KB-0043-"), path.name)
+
+    def test_duplicate_detection_crosses_knowledge_type_directories(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            existing = Path(td) / "knowledge" / "decisions" / "KB-0042-same-conclusion.md"
+            existing.parent.mkdir(parents=True, exist_ok=True)
+            existing.write_text("# Same Conclusion\n\n## Conclusion\nSame Conclusion\n", encoding="utf-8")
+            task = store.create_task("跨目录查重测试", "verify duplicate search")
+            cid = store.stage_candidate("Same Conclusion", "lesson", evidence="unit test", source_task=task)
+            path = store.publish_candidate(cid)
+            self.assertEqual(path, existing)
+            self.assertEqual(store.get_candidate(cid).status, "duplicate")
+
+    def test_resolve_required_action_note_does_not_stack(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            task = store.create_task("note 叠加测试", "需要 evidence 的任务")
+            store.preflight(task, "需要 evidence 的任务")
+            store.resolve_required_action(task, "RA-001", "needs-review", "first note")
+            store.resolve_required_action(task, "RA-001", "resolved", "second note")
+            preflight = (Path(td) / "tasks" / task / "preflight.md").read_text(encoding="utf-8")
+            self.assertIn("second note", preflight)
+            self.assertNotIn("first note -- second note", preflight)
+
+    def test_init_does_not_revive_deleted_seed_files(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            seed = Path(td) / "knowledge" / "pitfalls" / "PIT-001-no-evidence-no-completion.md"
+            self.assertTrue(seed.exists())
+            seed.unlink()
+            store.init()
+            self.assertFalse(seed.exists())
+
+    def test_search_does_not_match_two_character_chinese_fragments_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            weak = Path(td) / "knowledge" / "runbooks" / "KB-0040-weak.md"
+            strong = Path(td) / "knowledge" / "runbooks" / "KB-0041-strong.md"
+            weak.write_text("# 自动\n\n只有自动两个字\n", encoding="utf-8")
+            strong.write_text("# 自动化\n\n包含完整自动化关键词\n", encoding="utf-8")
+            hits = store.search("自动化", limit=5)
+            paths = [hit["path"] for hit in hits]
+            self.assertIn("knowledge\\runbooks\\KB-0041-strong.md", paths)
+            self.assertNotIn("knowledge\\runbooks\\KB-0040-weak.md", paths)
+
+    def test_mcp_server_entrypoint_uses_standard_stdio(self):
+        entry = (Path(__file__).resolve().parents[1] / "mcp-server" / "server.py").read_text(encoding="utf-8")
+        self.assertIn("stdio_main", entry)
+
+    def test_preflight_caps_blocking_required_actions(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            pitfalls = Path(td) / "knowledge" / "pitfalls"
+            for i in range(MAX_RISK_HITS + 2):
+                (pitfalls / f"KB-01{i:02d}-widgetflux.md").write_text(
+                    f"# Widgetflux pitfall {i}\n\nwidgetflux breaks when reused\n", encoding="utf-8"
+                )
+            task = store.create_task("上限测试", "widgetflux")
+            result = store.preflight(task, "widgetflux")
+            self.assertEqual(len(result["risk_hits"]), MAX_RISK_HITS)
+            self.assertEqual(len(result["deferred_risks"]), 2)
+            blocking = [a for a in result["required_actions"] if a["kind"] == "pitfall"]
+            self.assertEqual(len(blocking), MAX_RISK_HITS)
+            preflight_text = (Path(td) / "tasks" / task / "preflight.md").read_text(encoding="utf-8")
+            self.assertIn("Deferred Risk Hits", preflight_text)
+
+    def test_search_ignores_publish_template_scaffolding(self):
+        with tempfile.TemporaryDirectory() as td:
+            store = KnowledgeStore(td)
+            store.init()
+            task = store.create_task("模板噪音测试", "verify scaffolding is ignored")
+            cid = store.stage_candidate("Snowmelt cadence stays stable", "runbook", evidence="unit test", source_task=task)
+            published = store.publish_candidate(cid)
+            body = published.read_text(encoding="utf-8")
+            self.assertIn("- type: runbook", body)
+            self.assertIn("## Conclusion", body)
+            self.assertEqual(store.search("type"), [])
+            self.assertEqual(store.search("scope"), [])
+            self.assertEqual(store.search("tags"), [])
+            self.assertTrue(store.search("snowmelt"))
+
+
 if __name__ == "__main__":
     unittest.main()
+
+

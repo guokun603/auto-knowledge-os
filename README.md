@@ -187,8 +187,14 @@ Use `status` for normal health checks. Use `status --deep` only when you explici
 ### Run Tests
 
 ```powershell
-G:\AI_KB\.venv\Scripts\python.exe -m unittest discover -s tests -v
+Set-Location -LiteralPath "G:\AI 架构"
+python -m unittest discover -s tests -v
 ```
+
+If `.venv` was created on a different machine or user account, its `python.exe` is a
+stub pointing at a base interpreter that no longer exists, and calling it directly
+fails. The `tools\` scripts detect this and fall back to system Python; to rebuild
+`.venv` itself, run `换电脑初始化.bat`.
 
 Run the full audit:
 
@@ -198,7 +204,7 @@ powershell -ExecutionPolicy Bypass -File "G:\AI 架构\tools\full-auto-audit.ps1
 
 Current verification:
 
-- Unit tests: 18 passing tests on 2026-08-05.
+- Unit tests: 28 passing tests on 2026-08-05.
 - Full audit: `tools/full-auto-audit.ps1` writes `.auto_kb/full-auto-audit.json`; it passes only when the current task gate is closed or there is no active task.
 - Cross-directory central knowledge search: verified through `central_auto_kb`.
 - MCP server: `central_auto_kb`, with `mcp>=2.0,<3.0`.
@@ -464,8 +470,13 @@ python -m auto_kb.cli status --deep
 跑单元测试：
 
 ```powershell
-G:\AI_KB\.venv\Scripts\python.exe -m unittest discover -s tests -v
+Set-Location -LiteralPath "G:\AI 架构"
+python -m unittest discover -s tests -v
 ```
+
+如果 `.venv` 是在别的电脑或别的用户账号下创建的，里面的 `python.exe` 只是一个指向
+已不存在的基础解释器的壳，直接调用会报 `No Python at ...`。`tools\` 下的脚本会检测
+这种情况并回退到系统 Python；要重建 `.venv` 本身，运行 `换电脑初始化.bat`。
 
 跑完整审计：
 
@@ -475,7 +486,7 @@ powershell -ExecutionPolicy Bypass -File "G:\AI 架构\tools\full-auto-audit.ps1
 
 当前本机验证状态：
 
-- 2026-08-05：单元测试 18 个通过。
+- 2026-08-05：单元测试 28 个通过。
 - 完整体检会写入 `.auto_kb/full-auto-audit.json`；有当前任务时，必须先让当前任务 gate 通过。
 - Qdrant 默认关闭，因为当前本地 hash embedding 不具备真实语义检索能力；默认使用关键词检索。
 ### 哪些文件不要上传

@@ -195,7 +195,7 @@ def create_standard_server(root: str | None = None) -> Server:
     return Server(
         "central-auto-kb",
         version="1.0.0",
-        instructions="Use this server to search and update the central knowledge base at G:\\AI 架构.",
+        instructions=f"Use this server to search and update the central knowledge base at {store.root}.",
         on_list_tools=list_tools,
         on_call_tool=call_standard_tool,
     )

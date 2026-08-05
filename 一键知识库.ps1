@@ -15,7 +15,7 @@ while ($true) {
     Write-Host "2. 体检：状态 + 测试 + 当前门禁"
     Write-Host "3. 一键跑完整任务闭环"
     Write-Host "4. 搜索知识库"
-    Write-Host "5. 启动 MCP/JSON-RPC 服务"
+    Write-Host "5. 启动 MCP 服务（供 Codex 连接，不是给人看的界面）"
     Write-Host "0. 退出"
     $choice = Read-Host "请选择"
 
@@ -32,7 +32,13 @@ while ($true) {
             $query = Read-Host "搜索关键词"
             & .\tools\kb.ps1 -ProjectRoot $ProjectRoot search $query
         }
-        "5" { & .\tools\start-mcp-server.ps1 -ProjectRoot $ProjectRoot }
+        "5" {
+            Write-Host "MCP 是 stdio 协议服务，由 Codex 通过管道调用。" -ForegroundColor Yellow
+            Write-Host "手动启动后窗口会一直静默等待输入，这是正常现象，不是卡死。" -ForegroundColor Yellow
+            Write-Host "日常使用不需要手动启动；Codex 会按全局配置自己拉起。" -ForegroundColor Yellow
+            Write-Host "按 Ctrl+C 可以退出。" -ForegroundColor DarkYellow
+            & .\tools\start-mcp-server.ps1 -ProjectRoot $ProjectRoot
+        }
         "0" { break }
         default { Write-Host "无效选择" -ForegroundColor Yellow }
     }

@@ -1,8 +1,10 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import re
 import sqlite3
+import unicodedata
+from difflib import SequenceMatcher
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -23,6 +25,16 @@ ACTION_CLOSED_STATUSES = {"resolved", "needs-review", "rejected"}
 CANDIDATE_STATUSES = {"candidate", "verified", "accepted", "needs-review", "rejected", "published", "duplicate"}
 CANDIDATE_PENDING_STATUSES = {"candidate", "verified"}
 ACTION_RE = re.compile(r"^- \[(?P<status>[^\]]+)\] (?P<id>RA-\d+) \((?P<kind>[^)]+)\) (?P<path>.+?) :: (?P<summary>.*)$")
+KB_FILE_RE = re.compile(r"^KB-(?P<number>\d+)-")
+TEMPLATE_FIELD_RE = re.compile(
+    r"^- (?:id|kb_number|type|scope|status|source_task|tags|created_at|published_at)\s*:",
+    re.IGNORECASE,
+)
+TEMPLATE_HEADING_RE = re.compile(r"^#{1,6}\s*(?:evidence|conclusion)\s*$", re.IGNORECASE)
+# Cap how many matched pitfalls become hard task obligations. Without a cap the
+# number of Required Actions grows with the knowledge base, so a trivial task
+# eventually has to close a dozen unrelated items before it can pass the gate.
+MAX_RISK_HITS = 3
 
 
 def now() -> str:
@@ -33,6 +45,28 @@ def slugify(text: str, max_len: int = 48) -> str:
     text = re.sub(r"[^\w\u4e00-\u9fff-]+", "-", text.strip(), flags=re.UNICODE)
     text = re.sub(r"-+", "-", text).strip("-").lower()
     return (text or "task")[:max_len]
+
+
+def normalize_knowledge_text(text: str) -> str:
+    text = unicodedata.normalize("NFKC", text).casefold()
+    return re.sub(r"[^\w\u4e00-\u9fff]+", "", text, flags=re.UNICODE)
+
+
+def strip_template_noise(text: str) -> str:
+    """Drop publish-template scaffolding so search scores real content.
+
+    `publish_candidate` writes the same metadata field list and the same
+    `## Evidence` / `## Conclusion` headings into every published file. Left in,
+    they make words like `type`, `scope`, and `tags` match the whole knowledge
+    base, which drowns real hits and manufactures bogus preflight risk hits.
+    """
+    kept = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if TEMPLATE_FIELD_RE.match(stripped) or TEMPLATE_HEADING_RE.match(stripped):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
 
 
 @dataclass
@@ -94,6 +128,9 @@ class KnowledgeStore:
         self._seed_files()
 
     def _seed_files(self) -> None:
+        marker = self.root / ".auto_kb" / "seeded"
+        if marker.exists():
+            return
         seeds = {
             "knowledge/README.md": "# Knowledge Index\n\nAuthoritative Markdown knowledge lives here. Derived indexes must be rebuildable from this folder.\n",
             "knowledge/pitfalls/PIT-001-no-evidence-no-completion.md": "# PIT-001 No Evidence, No Completion\n\n- type: pitfall\n- status: accepted\n- trigger: task claims completion without test, file, command, screenshot, log, or other reviewable evidence.\n- gate: evidence must exist or the task must explicitly prove no evidence is required.\n- mitigation: write evidence under task `evidence/` and cite it in `log.md`.\n",
@@ -105,7 +142,8 @@ class KnowledgeStore:
             if not path.exists():
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(text, encoding="utf-8")
-
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text(now(), encoding="utf-8")
     def record_event(self, source: str, payload: dict) -> None:
         with self.connect() as con:
             con.execute("insert into events(source,payload,created_at) values(?,?,?)", (source, json.dumps(payload, ensure_ascii=False), now()))
@@ -167,30 +205,54 @@ class KnowledgeStore:
 
     def pending_candidates(self, task_id: str | None = None) -> list[Candidate]:
         task_id = self.resolve_task(task_id)
-        sql = "select * from candidates where status in ('candidate','verified')"
-        args = []
+        statuses = sorted(CANDIDATE_PENDING_STATUSES)
+        placeholders = ",".join("?" for _ in statuses)
+        sql = f"select * from candidates where status in ({placeholders})"
+        args: list[str] = list(statuses)
         if task_id:
             sql += " and source_task=?"
             args.append(task_id)
         with self.connect() as con:
             rows = con.execute(sql, args).fetchall()
         return [Candidate(**dict(r)) for r in rows]
-
     def set_candidate_status(self, id: int, status: str, note: str = "") -> Candidate:
         if status not in CANDIDATE_STATUSES:
             raise ValueError(f"invalid candidate status: {status}")
         cand = self.get_candidate(id)
+        if status == "accepted":
+            path = self.publish_candidate(id, status="accepted")
+            updated = self.get_candidate(id)
+            self.record_event("kb.candidate_status", {"id": id, "from": cand.status, "to": updated.status, "note": note, "published_path": str(path.relative_to(self.root))})
+            if updated.source_task:
+                self.append_log(updated.source_task, f"candidate {id} accepted and published: {note or 'no note'}")
+            return updated
         with self.connect() as con:
             con.execute("update candidates set status=? where id=?", (status, id))
         self.record_event("kb.candidate_status", {"id": id, "from": cand.status, "to": status, "note": note})
         if cand.source_task:
             self.append_log(cand.source_task, f"candidate {id} marked {status}: {note or 'no note'}")
         return self.get_candidate(id)
+    def next_kb_number(self) -> int:
+        max_number = 0
+        for path in self.iter_markdown("knowledge"):
+            match = KB_FILE_RE.match(path.name)
+            if match:
+                max_number = max(max_number, int(match.group("number")))
+        return max_number + 1
+
+    def make_kb_path(self, folder: str, summary: str) -> Path:
+        number = self.next_kb_number()
+        slug = slugify(summary)
+        while True:
+            path = self.root / "knowledge" / folder / f"KB-{number:04d}-{slug}.md"
+            if not path.exists():
+                return path
+            number += 1
 
     def publish_candidate(self, id: int, status: str = "published") -> Path:
         cand = self.get_candidate(id)
         folder = ROUTES.get(cand.type, "runbooks")
-        existing = self.find_published_duplicate(cand.summary, folder)
+        existing = self.find_published_duplicate(cand.summary)
         if existing is not None:
             rel = str(existing.relative_to(self.root))
             with self.connect() as con:
@@ -199,8 +261,8 @@ class KnowledgeStore:
             self.record_event("kb.publish.duplicate", {"id": id, "path": rel})
             return existing
 
-        path = self.root / "knowledge" / folder / f"KB-{id:04d}-{slugify(cand.summary)}.md"
-        body = f"# {cand.summary}\n\n- id: {id}\n- type: {cand.type}\n- scope: {cand.scope}\n- status: {status}\n- source_task: {cand.source_task}\n- tags: {cand.tags}\n- created_at: {cand.created_at}\n- published_at: {now()}\n\n## Evidence\n\n{cand.evidence or 'No external evidence recorded.'}\n\n## Conclusion\n\n{cand.summary}\n"
+        path = self.make_kb_path(folder, cand.summary)
+        body = f"# {cand.summary}\n\n- id: {id}\n- kb_number: {path.name.split('-', 2)[1]}\n- type: {cand.type}\n- scope: {cand.scope}\n- status: {status}\n- source_task: {cand.source_task}\n- tags: {cand.tags}\n- created_at: {cand.created_at}\n- published_at: {now()}\n\n## Evidence\n\n{cand.evidence or 'No external evidence recorded.'}\n\n## Conclusion\n\n{cand.summary}\n"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(body, encoding="utf-8")
         with self.connect() as con:
@@ -212,20 +274,39 @@ class KnowledgeStore:
         self.record_event("kb.publish", {"id": id, "path": str(path.relative_to(self.root))})
         return path
 
-    def find_published_duplicate(self, summary: str, folder: str) -> Path | None:
-        normalized = " ".join(summary.split()).casefold()
-        for path in (self.root / "knowledge" / folder).glob("*.md"):
-            text = path.read_text(encoding="utf-8", errors="ignore")
-            title = text.splitlines()[0].lstrip("# ").strip() if text.splitlines() else ""
-            if " ".join(title.split()).casefold() == normalized:
-                return path
-            marker = "## Conclusion"
-            if marker in text:
-                conclusion = text.split(marker, 1)[1].strip().splitlines()[0].strip() if text.split(marker, 1)[1].strip() else ""
-                if " ".join(conclusion.split()).casefold() == normalized:
-                    return path
-        return None
+    def _document_title_and_conclusion(self, path: Path) -> tuple[str, str]:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        title = ""
+        for line in text.splitlines():
+            if line.startswith("# "):
+                title = line.lstrip("# ").strip()
+                break
+        conclusion = ""
+        marker = "## Conclusion"
+        if marker in text:
+            body = text.split(marker, 1)[1].strip()
+            conclusion = body.splitlines()[0].strip() if body else ""
+        return title, conclusion
 
+    def _is_duplicate_summary(self, left: str, right: str) -> bool:
+        left_norm = normalize_knowledge_text(left)
+        right_norm = normalize_knowledge_text(right)
+        if not left_norm or not right_norm:
+            return False
+        if left_norm == right_norm:
+            return True
+        if min(len(left_norm), len(right_norm)) >= 12:
+            return SequenceMatcher(None, left_norm, right_norm).ratio() >= 0.96
+        return False
+
+    def find_published_duplicate(self, summary: str, folder: str | None = None) -> Path | None:
+        search_root = self.root / "knowledge" / folder if folder else self.root / "knowledge"
+        paths = search_root.rglob("*.md") if search_root.exists() else []
+        for path in paths:
+            title, conclusion = self._document_title_and_conclusion(path)
+            if self._is_duplicate_summary(summary, title) or self._is_duplicate_summary(summary, conclusion):
+                return path
+        return None
     def add_memory(self, key: str, value: str, scope: str = "global") -> None:
         with self.connect() as con:
             con.execute("insert into memories(key,value,scope,created_at) values(?,?,?,?)", (key, value, scope, now()))
@@ -251,25 +332,27 @@ class KnowledgeStore:
 
     def search(self, query: str, limit: int = 8) -> list[dict]:
         raw_terms = [t.lower() for t in re.findall(r"[\w\u4e00-\u9fff]+", query)]
-        terms: list[str] = []
+        weighted_terms: list[tuple[str, int]] = []
         for term in raw_terms:
-            terms.append(term)
-            # Chinese queries are often typed as one phrase without spaces. Add short
-            # character windows so searches like "自动化" can hit longer sentences.
+            weighted_terms.append((term, 3))
             if re.search(r"[\u4e00-\u9fff]", term):
-                for size in (2, 3, 4):
-                    terms.extend(term[i:i + size] for i in range(0, max(len(term) - size + 1, 0)))
-        terms = list(dict.fromkeys(t for t in terms if t))
+                for size in (3, 4):
+                    if len(term) > size:
+                        weighted_terms.extend((term[i:i + size], 1) for i in range(0, len(term) - size + 1))
+        deduped: dict[str, int] = {}
+        for term, weight in weighted_terms:
+            if term:
+                deduped[term] = max(deduped.get(term, 0), weight)
         hits = []
         for path in self.iter_markdown("knowledge"):
             text = path.read_text(encoding="utf-8", errors="ignore")
-            lower = text.lower()
-            score = sum(lower.count(t) for t in terms) if terms else 0
-            if score:
+            lower = strip_template_noise(text).lower()
+            raw_score = sum(weight for term, weight in deduped.items() if term in lower)
+            if raw_score:
+                score = round(raw_score * 1000 / max(len(lower), 200), 4)
                 hits.append((score, path, text[:300]))
         hits.sort(key=lambda x: x[0], reverse=True)
         return [{"score": s, "path": str(p.relative_to(self.root)), "preview": prev} for s, p, prev in hits[:limit]]
-
     def _knowledge_title(self, rel_path: str) -> str:
         path = self.root / rel_path
         if not path.exists():
@@ -329,8 +412,9 @@ class KnowledgeStore:
         for line in lines:
             match = ACTION_RE.match(line.strip())
             if match and (action_id == "all" or match.group("id") == action_id):
+                base_summary = match.group("summary").split(" -- ", 1)[0].strip()
                 suffix = f" -- {note}" if note else ""
-                line = f"- [{status}] {match.group('id')} ({match.group('kind')}) {match.group('path')} :: {match.group('summary')}{suffix}"
+                line = f"- [{status}] {match.group('id')} ({match.group('kind')}) {match.group('path')} :: {base_summary}{suffix}"
                 changed.append(match.group("id"))
             updated_lines.append(line)
         if not changed and action_id == "all":
@@ -342,13 +426,16 @@ class KnowledgeStore:
         self.append_log(task_id, f"required action {action_id} marked {status}: {note or 'no note'}")
         self.record_event("task.required_action", {"task_id": task_id, "action_id": action_id, "status": status, "note": note, "changed": changed})
         return self.parse_required_actions(task_id)
-
     def preflight(self, task_id: str | None, goal: str) -> dict:
         task_id = self.resolve_task(task_id)
         if not task_id:
             task_id = self.create_task(goal, goal)
         hits = self.search(goal, limit=10)
-        risk_hits = [h for h in hits if "pitfalls" in h["path"]]
+        matched_risks = [h for h in hits if "pitfalls" in h["path"]]
+        # Only the highest-scoring pitfalls become blocking obligations. The rest
+        # stay listed as context so nothing is hidden, just not gate-blocking.
+        risk_hits = matched_risks[:MAX_RISK_HITS]
+        deferred_risks = matched_risks[MAX_RISK_HITS:]
         required_actions = self._build_required_actions(risk_hits)
         discussion_required = bool(risk_hits)
         warnings = []
@@ -376,10 +463,12 @@ class KnowledgeStore:
         lines += [f"- {h['path']} (score={h['score']})" for h in hits] or ["- None"]
         lines += ["", "## Risk Hits"]
         lines += [f"- {h['path']}" for h in risk_hits] or ["- None"]
+        lines += ["", f"## Deferred Risk Hits (context only, not gate-blocking; cap={MAX_RISK_HITS})"]
+        lines += [f"- {h['path']} (score={h['score']})" for h in deferred_risks] or ["- None"]
         (self.root / "tasks" / task_id / "preflight.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-        self.append_log(task_id, f"preflight generated: Gate={gate}, related={len(hits)}, risks={len(risk_hits)}")
-        self.record_event("task.preflight", {"task_id": task_id, "gate": gate, "hits": hits, "warnings": warnings, "required_actions": required_actions})
-        return {"task_id": task_id, "gate": gate, "hits": hits, "risk_hits": risk_hits, "warnings": warnings, "required_actions": required_actions, "discussion_required": discussion_required}
+        self.append_log(task_id, f"preflight generated: Gate={gate}, related={len(hits)}, risks={len(risk_hits)}, deferred={len(deferred_risks)}")
+        self.record_event("task.preflight", {"task_id": task_id, "gate": gate, "hits": hits, "warnings": warnings, "required_actions": required_actions, "deferred_risks": deferred_risks})
+        return {"task_id": task_id, "gate": gate, "hits": hits, "risk_hits": risk_hits, "deferred_risks": deferred_risks, "warnings": warnings, "required_actions": required_actions, "discussion_required": discussion_required}
 
     def gate(self, task_id: str | None = None) -> dict:
         self.init()
@@ -409,11 +498,15 @@ class KnowledgeStore:
         pending = self.pending_candidates(task_id)
         if pending:
             errors.append(f"pending candidates: {[c.id for c in pending]}")
+        statuses = sorted(CANDIDATE_PENDING_STATUSES)
+        placeholders = ",".join("?" for _ in statuses)
         with self.connect() as con:
-            rows = con.execute("select * from candidates where status in ('candidate','verified') and coalesce(source_task,'')='' ").fetchall()
+            rows = con.execute(f"select * from candidates where status in ({placeholders}) and coalesce(source_task,'')=''", statuses).fetchall()
         global_pending = [Candidate(**dict(r)) for r in rows]
         if global_pending:
             errors.append(f"global pending candidates without source_task: {[c.id for c in global_pending]}")
         result = {"pass": not errors, "errors": errors, "task_id": task_id}
         self.record_event("gate.check", result)
         return result
+
+

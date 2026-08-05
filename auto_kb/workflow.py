@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
@@ -58,15 +58,14 @@ class KnowledgeClosureWorkflow:
         self.checkpoint("evidence", {"task_id": task_id})
         published: list[str] = []
         if conclusion and conclusion.strip():
-            if preflight.get("required_actions"):
-                self.store.resolve_required_action(task_id, "all", "resolved", "caller supplied a durable conclusion; see evidence/workflow.txt")
-                preflight["required_actions"] = self.store.parse_required_actions(task_id)
-                self.checkpoint("preflight_actions_resolved", {"task_id": task_id, "required_actions": preflight["required_actions"]})
             cid = self.store.stage_candidate(conclusion, type="lesson", evidence=f"workflow task {task_id}", source_task=task_id)
             self.checkpoint("candidate_staged", {"candidate_id": cid})
-            path = self.store.publish_candidate(cid)
-            published.append(str(path.relative_to(self.store.root)))
-            self.checkpoint("candidate_published", {"candidate_id": cid, "path": published[-1]})
+            if preflight.get("required_actions"):
+                self.checkpoint("candidate_waiting_for_required_actions", {"candidate_id": cid, "required_actions": preflight["required_actions"]})
+            else:
+                path = self.store.publish_candidate(cid)
+                published.append(str(path.relative_to(self.store.root)))
+                self.checkpoint("candidate_published", {"candidate_id": cid, "path": published[-1]})
         else:
             cid = self.store.stage_candidate(
                 "NEEDS-REVIEW: workflow completed without a verified durable conclusion",
@@ -80,3 +79,5 @@ class KnowledgeClosureWorkflow:
         gate = self.store.gate(task_id)
         self.checkpoint("closure_gate", gate)
         return WorkflowResult(task_id=task_id, preflight=preflight, gate=gate, published=published, adapters=self.adapter_statuses())
+
+
