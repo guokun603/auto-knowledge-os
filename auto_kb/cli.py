@@ -39,6 +39,9 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
     root = Path(args.root or os.environ.get("AUTO_KB_ROOT") or ".").resolve()
     if root.exists():
+        if not root.is_dir():
+            print(f"error: AUTO_KB_ROOT is not a directory: {root}", file=sys.stderr)
+            return 1
         os.chdir(root)
     store = KnowledgeStore(root)
     if args.cmd == "init":

@@ -53,8 +53,8 @@ def probe_adapter_statuses(store: KnowledgeStore) -> list[AdapterStatus]:
             AdapterStatus("langgraph", "local-checkpoint-graph", False, detail),
         ]
     return [
-        AdapterStatus("mem0", "external-sdk-local-store" if module_available("mem0") else "sqlite-fallback", module_available("mem0"), f"mem0 package {'found' if module_available('mem0') else 'not found'}; local fallback remains SQLite"),
-        AdapterStatus("graphiti", "external-sdk-local-edges" if module_available("graphiti_core") else "sqlite-fallback", module_available("graphiti_core"), f"graphiti_core package {'found' if module_available('graphiti_core') else 'not found'}; local fallback remains SQLite"),
+        AdapterStatus("mem0", "sqlite-fallback", False, f"mem0 package {'found but not yet wired' if module_available('mem0') else 'not found'}; using SQLite fallback"),
+        AdapterStatus("graphiti", "sqlite-fallback", False, f"graphiti_core package {'found but not yet wired' if module_available('graphiti_core') else 'not found'}; using SQLite edge fallback"),
         AdapterStatus("qdrant", "external-local-qdrant" if module_available("qdrant_client") and qdrant_enabled() else "sqlite-keyword-primary", module_available("qdrant_client") and qdrant_enabled(), f"qdrant_client package {'found' if module_available('qdrant_client') else 'not found'}; Qdrant disabled by default because hash embeddings are not semantic; set AUTO_KB_ENABLE_QDRANT=1 only for experiments"),
         AdapterStatus("langgraph", "external-stategraph" if module_available("langgraph") else "local-checkpoint-graph", module_available("langgraph"), f"langgraph package {'found' if module_available('langgraph') else 'not found'}; local checkpoints remain SQLite"),
     ]
@@ -72,7 +72,7 @@ class Mem0Adapter:
             os.environ.setdefault("MEM0_DIR", str(mem0_dir))
             os.environ.setdefault("MEM0_TELEMETRY", "False")
             import mem0  # type: ignore  # noqa: F401
-            self.status = AdapterStatus("mem0", "external-sdk-local-store", True, f"mem0 import available; MEM0_DIR={mem0_dir}; SQLite remains local durable fallback")
+            self.status = AdapterStatus("mem0", "sqlite-fallback", False, "mem0 SDK importable but not yet wired; using SQLite fallback")
         except Exception as exc:
             self.status = AdapterStatus("mem0", "sqlite-fallback", False, str(exc))
 
@@ -80,8 +80,12 @@ class Mem0Adapter:
         self.store.add_memory(key, value, scope)
 
     def search(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         with self.store.connect() as con:
-            rows = con.execute("select * from memories where key like ? or value like ? limit ?", (f"%{query}%", f"%{query}%", limit)).fetchall()
+            rows = con.execute(
+                "select * from memories where key like ? escape '\\' or value like ? escape '\\' limit ?",
+                (f"%{escaped}%", f"%{escaped}%", limit),
+            ).fetchall()
         return [dict(r) for r in rows]
 
 
@@ -93,7 +97,7 @@ class GraphitiAdapter:
             return
         try:
             import graphiti_core  # type: ignore  # noqa: F401
-            self.status = AdapterStatus("graphiti", "external-sdk-local-edges", True, "graphiti_core import available; SQLite edge log remains local fallback without Neo4j config")
+            self.status = AdapterStatus("graphiti", "sqlite-fallback", False, "graphiti_core SDK importable but not yet wired; using SQLite edge fallback")
         except Exception as exc:
             self.status = AdapterStatus("graphiti", "sqlite-fallback", False, str(exc))
 

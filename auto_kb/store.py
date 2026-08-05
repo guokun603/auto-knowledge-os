@@ -35,6 +35,10 @@ TEMPLATE_HEADING_RE = re.compile(r"^#{1,6}\s*(?:evidence|conclusion)\s*$", re.IG
 # number of Required Actions grows with the knowledge base, so a trivial task
 # eventually has to close a dozen unrelated items before it can pass the gate.
 MAX_RISK_HITS = 3
+# Task IDs: TASK-YYYYMMDD-HHMMSS-microseconds-slug. Reject path traversal.
+VALID_TASK_ID = re.compile(r"^TASK-\d{8}-\d{6}-\d{1,7}-[\w一-鿿-]+$")
+# Match "Gate: PASS" or "Gate: NEEDS-REVIEW" on its own line in preflight.
+GATE_LINE_RE = re.compile(r"^Gate: (PASS|NEEDS-REVIEW)$", re.MULTILINE)
 
 
 def now() -> str:
@@ -125,20 +129,29 @@ class KnowledgeStore:
             )
             con.execute("delete from vector_docs where id not in (select max(id) from vector_docs group by path)")
             con.execute("create unique index if not exists idx_vector_docs_path on vector_docs(path)")
-            self._init_fts(con)
         self._seed_files()
+        with self.connect() as con:
+            self._init_fts(con)
 
     def _init_fts(self, con: sqlite3.Connection) -> None:
         """Create FTS5 index if available; silently no-op otherwise."""
         try:
             con.execute("create virtual table if not exists knowledge_fts using fts5(path, content, tokenize='unicode61')")
-            # Backfill from existing knowledge files if FTS is empty but vector_docs has content
+            # Backfill from existing knowledge files if FTS is empty
             row = con.execute("select count(*) as cnt from knowledge_fts").fetchone()
             if row and row["cnt"] == 0:
                 docs = con.execute("select path, content from vector_docs").fetchall()
-                for doc in docs:
-                    cleaned = strip_template_noise(doc["content"])
-                    con.execute("insert into knowledge_fts(path, content) values(?, ?)", (doc["path"], cleaned))
+                if docs:
+                    for doc in docs:
+                        cleaned = strip_template_noise(doc["content"])
+                        con.execute("insert into knowledge_fts(path, content) values(?, ?)", (doc["path"], cleaned))
+                else:
+                    # Fresh checkout: index knowledge markdown files directly from disk
+                    for path in self.iter_markdown("knowledge"):
+                        rel = str(path.relative_to(self.root))
+                        content = path.read_text(encoding="utf-8", errors="ignore")
+                        cleaned = strip_template_noise(content)
+                        con.execute("insert into knowledge_fts(path, content) values(?, ?)", (rel, cleaned))
         except sqlite3.OperationalError:
             pass  # FTS5 not available in this SQLite build; keyword search remains the fallback
 
@@ -178,7 +191,12 @@ class KnowledgeStore:
         return self.current_task_path.read_text(encoding="utf-8").strip() if self.current_task_path.exists() else None
 
     def resolve_task(self, task: str | None) -> str | None:
-        return self.get_current_task() if task in (None, "", "current") else task
+        resolved = self.get_current_task() if task in (None, "", "current") else task
+        if resolved is None:
+            return None
+        if not VALID_TASK_ID.match(resolved):
+            raise ValueError(f"invalid task id: {resolved}")
+        return resolved
 
     def create_task(self, title: str, goal: str | None = None) -> str:
         self.init()
@@ -197,10 +215,16 @@ class KnowledgeStore:
         with (self.root / "tasks" / task_id / "log.md").open("a", encoding="utf-8") as f:
             f.write(f"- {now()} {line}\n")
 
+    # Windows reserved device names (case-insensitive)
+    _RESERVED_NAMES = {n.lower() for n in ("con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9")}
+
     def add_evidence(self, task_id: str, name: str, content: str) -> Path:
         evidence_name = Path(name)
         if evidence_name.is_absolute() or evidence_name.name != name or name in {"", ".", ".."}:
             raise ValueError(f"invalid evidence file name: {name}")
+        stem = evidence_name.stem.lower()
+        if stem in self._RESERVED_NAMES:
+            raise ValueError(f"invalid evidence file name (reserved): {name}")
         path = self.root / "tasks" / task_id / "evidence" / evidence_name.name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -347,7 +371,7 @@ class KnowledgeStore:
 
     def index_document(self, path: Path) -> None:
         rel = str(path.relative_to(self.root)) if path.is_absolute() else str(path)
-        content = (self.root / rel).read_text(encoding="utf-8")
+        content = (self.root / rel).read_text(encoding="utf-8", errors="ignore")
         with self.connect() as con:
             con.execute("delete from vector_docs where path=?", (rel,))
             con.execute("insert into vector_docs(path,content,tags,created_at) values(?,?,?,?)", (rel, content, "", now()))
@@ -427,7 +451,7 @@ class KnowledgeStore:
             actions.append({
                 "id": f"RA-{len(actions) + 1:03d}",
                 "kind": "discussion",
-                "path": "knowledge\\discussions",
+                "path": "knowledge/discussions",
                 "summary": "If the task has uncertain or non-final conclusions, stage them as discussion/needs-review instead of publishing as fact.",
                 "status": "pending",
             })
@@ -464,7 +488,8 @@ class KnowledgeStore:
             match = ACTION_RE.match(line.strip())
             if match and (action_id == "all" or match.group("id") == action_id):
                 base_summary = match.group("summary").split(" -- ", 1)[0].strip()
-                suffix = f" -- {note}" if note else ""
+                safe_note = note.replace("\n", " ").replace("\r", "") if note else ""
+                suffix = f" -- {safe_note}" if safe_note else ""
                 line = f"- [{status}] {match.group('id')} ({match.group('kind')}) {match.group('path')} :: {base_summary}{suffix}"
                 changed.append(match.group("id"))
             updated_lines.append(line)
@@ -509,7 +534,7 @@ class KnowledgeStore:
         lines = ["# Preflight", "", "Preflight-Version: 2", f"Task: {task_id}", f"Goal: {goal}", f"Gate: {gate}", "", "## Warnings"]
         lines += [f"- {w}" for w in warnings] or ["- None"]
         lines += ["", "## Discussion Routing", f"- discussion_required: {'yes' if discussion_required else 'no'}", "- discussion_paths:"]
-        lines += ["  - knowledge\\discussions"] if discussion_required else ["  - None"]
+        lines += ["  - knowledge/discussions"] if discussion_required else ["  - None"]
         lines += ["", "## Required Actions"]
         if required_actions:
             lines += [f"- [{a['status']}] {a['id']} ({a['kind']}) {a['path']} :: {a['summary']}" for a in required_actions]
@@ -541,7 +566,7 @@ class KnowledgeStore:
             if not (task_dir / name).exists():
                 errors.append(f"missing {name}")
         preflight = (task_dir / "preflight.md").read_text(encoding="utf-8", errors="ignore") if (task_dir / "preflight.md").exists() else ""
-        if "Gate: PASS" not in preflight and "Gate: NEEDS-REVIEW" not in preflight:
+        if not GATE_LINE_RE.search(preflight):
             errors.append("preflight gate is not PASS or NEEDS-REVIEW")
         unresolved_actions = [a for a in self.parse_required_actions(task_id) if a["status"] not in ACTION_CLOSED_STATUSES]
         if unresolved_actions:

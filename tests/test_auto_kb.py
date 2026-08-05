@@ -324,8 +324,10 @@ class AutoKBTests(unittest.TestCase):
             strong.write_text("# 自动化\n\n包含完整自动化关键词\n", encoding="utf-8")
             hits = store.search("自动化", limit=5)
             paths = [hit["path"] for hit in hits]
-            self.assertIn("knowledge\\runbooks\\KB-0041-strong.md", paths)
-            self.assertNotIn("knowledge\\runbooks\\KB-0040-weak.md", paths)
+            strong_path = str(Path("knowledge") / "runbooks" / "KB-0041-strong.md")
+            weak_path = str(Path("knowledge") / "runbooks" / "KB-0040-weak.md")
+            self.assertIn(strong_path, paths)
+            self.assertNotIn(weak_path, paths)
 
     def test_mcp_server_entrypoint_uses_standard_stdio(self):
         entry = (Path(__file__).resolve().parents[1] / "mcp-server" / "server.py").read_text(encoding="utf-8")
@@ -391,8 +393,7 @@ class ExternalAdapterSmokeTests(unittest.TestCase):
             self.assertSetEqual(names, {"mem0", "graphiti", "qdrant", "langgraph"})
             for s in statuses:
                 self.assertIn(s.mode, {
-                    "external-sdk-local-store", "sqlite-fallback",
-                    "external-sdk-local-edges",
+                    "sqlite-fallback",
                     "external-local-qdrant", "sqlite-keyword-primary", "sqlite-keyword-fallback",
                     "external-stategraph", "local-checkpoint-graph",
                 })
