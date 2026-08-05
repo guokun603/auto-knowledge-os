@@ -1,6 +1,6 @@
 # AutoKnowledgeOS
 
-AutoKnowledgeOS is a local-first knowledge-closure framework for Codex. It turns reusable lessons from AI conversations into Markdown knowledge, then makes future Codex tasks consume that knowledge before claiming completion.
+AutoKnowledgeOS is a local-first knowledge-closure framework for Codex. It turns reusable lessons from AI conversations into Markdown knowledge, then gives future Codex tasks a preflight and gate mechanism for consuming that knowledge before claiming completion.
 
 The short version:
 
@@ -18,7 +18,7 @@ AutoKnowledgeOS is not only a note folder. It is a task discipline system for AI
 2. It creates a task workspace under `tasks/`.
 3. It runs `preflight` before substantial work.
 4. It converts matched pitfalls into `Required Actions`.
-5. It forces each action to be marked `resolved`, `needs-review`, or `rejected`.
+5. It requires each action to be marked `resolved`, `needs-review`, or `rejected` before the completion gate passes.
 6. It requires evidence before completion.
 7. It publishes stable conclusions back to `knowledge/`.
 8. It exposes the workflow to Codex through MCP.
@@ -146,13 +146,13 @@ Run the completion gate:
 python -m auto_kb.cli gate --task current
 ```
 
-The gate fails if:
+The gate is the hard check inside this repository. Codex still needs to run the workflow or MCP tool; without a Codex lifecycle hook, this project cannot magically intercept every unrelated task by itself. The gate fails if:
 
 - task quartet files are missing
 - preflight is missing or invalid
 - any `Required Actions` remain `pending`
 - evidence is missing or empty
-- candidate knowledge remains unpublished
+- candidate knowledge remains pending
 
 ### Search Knowledge
 
@@ -198,12 +198,11 @@ powershell -ExecutionPolicy Bypass -File "G:\AI 架构\tools\full-auto-audit.ps1
 
 Current verification:
 
-- Unit tests: 10 passing tests.
-- Full audit: `pass: true`.
-- Cross-directory central knowledge search: verified.
-- MCP server: `central_auto_kb`.
-- Optional package probe: `mem0`, `graphiti_core`, `qdrant_client`, `langgraph`, `mcp`.
-
+- Unit tests: 18 passing tests on 2026-08-05.
+- Full audit: `tools/full-auto-audit.ps1` writes `.auto_kb/full-auto-audit.json`; it passes only when the current task gate is closed or there is no active task.
+- Cross-directory central knowledge search: verified through `central_auto_kb`.
+- MCP server: `central_auto_kb`, with `mcp>=2.0,<3.0`.
+- Qdrant: disabled by default because the local hash embedding fallback is not semantic; keyword search is the default. Set `AUTO_KB_ENABLE_QDRANT=1` only for experiments.
 ### Repository Layout
 
 ```text
@@ -239,7 +238,7 @@ Review `knowledge/` before publishing to a public repository, because knowledge 
 
 ### 这个框架是干什么的
 
-AutoKnowledgeOS 不是普通笔记目录。它是给 Codex 用的本地知识闭环框架。
+AutoKnowledgeOS 不是普通笔记目录。它是给 Codex 用的本地知识闭环框架：用 preflight 把旧知识变成当前任务约束，用 gate 验证任务能不能收尾。
 
 它解决的问题是：
 
@@ -263,7 +262,7 @@ AI 对话里形成的经验，不能只留在聊天记录里。
 
 人话版：
 
-> 以前知识库只是存东西。现在知识库会在每次任务前变成检查清单，没处理完不让说完成。
+> 以前知识库只是存东西。现在知识库会在任务前变成检查清单；只要走这个 workflow 或 MCP gate，没处理完就不能通过验收。
 
 ### 适合谁用
 
@@ -275,7 +274,7 @@ AI 对话里形成的经验，不能只留在聊天记录里。
 - 每次完成前留下证据
 - 把稳定结论自动沉淀成 Markdown
 
-那就适合用这个框架。
+那就适合用这个框架。注意：它能提供硬 gate 和一键脚本，但 Codex 本身如果没有生命周期 hook，仍需要通过 AGENTS/MCP/脚本触发这套流程。
 
 ### 第一次安装
 
@@ -318,7 +317,7 @@ G:\AI 架构\换电脑初始化.bat
 搜索中央知识库：项目边界
 ```
 
-Codex 会优先使用 MCP：
+按全局配置，Codex 应优先使用 MCP：
 
 ```text
 central_auto_kb
@@ -428,7 +427,7 @@ python -m auto_kb.cli gate --task current
 {"pass": true}
 ```
 
-才算完成。
+才算完成。这个 gate 是仓库内的硬检查；真正全自动取决于 Codex 是否按 AGENTS/MCP 调用它。
 
 ### 为什么 Preflight v2 更高级
 
@@ -474,6 +473,11 @@ G:\AI_KB\.venv\Scripts\python.exe -m unittest discover -s tests -v
 powershell -ExecutionPolicy Bypass -File "G:\AI 架构\tools\full-auto-audit.ps1" -ProjectRoot "G:\AI 架构"
 ```
 
+当前本机验证状态：
+
+- 2026-08-05：单元测试 18 个通过。
+- 完整体检会写入 `.auto_kb/full-auto-audit.json`；有当前任务时，必须先让当前任务 gate 通过。
+- Qdrant 默认关闭，因为当前本地 hash embedding 不具备真实语义检索能力；默认使用关键词检索。
 ### 哪些文件不要上传
 
 这些是本地运行状态，不要传 GitHub：

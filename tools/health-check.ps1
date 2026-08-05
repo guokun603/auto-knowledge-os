@@ -1,5 +1,5 @@
-﻿param(
-    [string]$ProjectRoot = "G:\AI 架构"
+param(
+    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot)
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8

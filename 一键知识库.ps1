@@ -1,5 +1,5 @@
-﻿param(
-    [string]$ProjectRoot = "G:\AI 架构"
+param(
+    [string]$ProjectRoot = $PSScriptRoot
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -30,11 +30,10 @@ while ($true) {
         }
         "4" {
             $query = Read-Host "搜索关键词"
-            python -m auto_kb.cli search $query
+            & .\tools\kb.ps1 -ProjectRoot $ProjectRoot search $query
         }
         "5" { & .\tools\start-mcp-server.ps1 -ProjectRoot $ProjectRoot }
         "0" { break }
         default { Write-Host "无效选择" -ForegroundColor Yellow }
     }
 }
-

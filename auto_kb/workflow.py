@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
@@ -45,14 +45,23 @@ class KnowledgeClosureWorkflow:
         self.graphiti.add_edge(f"task:{task_id}", "has_goal", goal)
         preflight = self.store.preflight(task_id, goal)
         self.checkpoint("preflight", preflight)
+        evidence_lines = [
+            f"Workflow executed for {task_id}",
+            f"Goal: {goal}",
+            f"Conclusion provided: {'yes' if conclusion and conclusion.strip() else 'no'}",
+        ]
         if preflight.get("required_actions"):
-            self.store.resolve_required_action(task_id, "all", "resolved", "workflow reviewed and handled preflight required actions")
-            preflight["required_actions"] = self.store.parse_required_actions(task_id)
-            self.checkpoint("preflight_actions_resolved", {"task_id": task_id, "required_actions": preflight["required_actions"]})
-        self.store.add_evidence(task_id, "workflow.txt", f"Workflow executed for {task_id}\nGoal: {goal}\n")
+            evidence_lines.append("Preflight required actions:")
+            for action in preflight["required_actions"]:
+                evidence_lines.append(f"- {action['id']} {action['path']} :: {action['summary']}")
+        self.store.add_evidence(task_id, "workflow.txt", "\n".join(evidence_lines) + "\n")
         self.checkpoint("evidence", {"task_id": task_id})
         published: list[str] = []
         if conclusion and conclusion.strip():
+            if preflight.get("required_actions"):
+                self.store.resolve_required_action(task_id, "all", "resolved", "caller supplied a durable conclusion; see evidence/workflow.txt")
+                preflight["required_actions"] = self.store.parse_required_actions(task_id)
+                self.checkpoint("preflight_actions_resolved", {"task_id": task_id, "required_actions": preflight["required_actions"]})
             cid = self.store.stage_candidate(conclusion, type="lesson", evidence=f"workflow task {task_id}", source_task=task_id)
             self.checkpoint("candidate_staged", {"candidate_id": cid})
             path = self.store.publish_candidate(cid)
@@ -71,4 +80,3 @@ class KnowledgeClosureWorkflow:
         gate = self.store.gate(task_id)
         self.checkpoint("closure_gate", gate)
         return WorkflowResult(task_id=task_id, preflight=preflight, gate=gate, published=published, adapters=self.adapter_statuses())
-

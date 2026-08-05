@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import hashlib
 import importlib.util
@@ -38,6 +38,10 @@ def module_available(module_name: str) -> bool:
     return importlib.util.find_spec(module_name) is not None
 
 
+def qdrant_enabled() -> bool:
+    return os.environ.get("AUTO_KB_ENABLE_QDRANT", "").strip().lower() in {"1", "true", "yes"}
+
+
 def probe_adapter_statuses(store: KnowledgeStore) -> list[AdapterStatus]:
     disabled = external_integrations_disabled()
     if disabled:
@@ -51,7 +55,7 @@ def probe_adapter_statuses(store: KnowledgeStore) -> list[AdapterStatus]:
     return [
         AdapterStatus("mem0", "external-sdk-local-store" if module_available("mem0") else "sqlite-fallback", module_available("mem0"), f"mem0 package {'found' if module_available('mem0') else 'not found'}; local fallback remains SQLite"),
         AdapterStatus("graphiti", "external-sdk-local-edges" if module_available("graphiti_core") else "sqlite-fallback", module_available("graphiti_core"), f"graphiti_core package {'found' if module_available('graphiti_core') else 'not found'}; local fallback remains SQLite"),
-        AdapterStatus("qdrant", "external-local-qdrant" if module_available("qdrant_client") else "sqlite-keyword-fallback", module_available("qdrant_client"), f"qdrant_client package {'found' if module_available('qdrant_client') else 'not found'}; local path: {store.root / 'vector' / 'qdrant_local'}"),
+        AdapterStatus("qdrant", "external-local-qdrant" if module_available("qdrant_client") and qdrant_enabled() else "sqlite-keyword-primary", module_available("qdrant_client") and qdrant_enabled(), f"qdrant_client package {'found' if module_available('qdrant_client') else 'not found'}; Qdrant disabled by default because hash embeddings are not semantic; set AUTO_KB_ENABLE_QDRANT=1 only for experiments"),
         AdapterStatus("langgraph", "external-stategraph" if module_available("langgraph") else "local-checkpoint-graph", module_available("langgraph"), f"langgraph package {'found' if module_available('langgraph') else 'not found'}; local checkpoints remain SQLite"),
     ]
 
@@ -111,6 +115,9 @@ class VectorAdapter:
         self.client = None
         if external_integrations_disabled():
             self.status = AdapterStatus("qdrant", "sqlite-keyword-fallback", False, "external integrations disabled by AUTO_KB_DISABLE_EXTERNAL")
+            return
+        if not qdrant_enabled():
+            self.status = AdapterStatus("qdrant", "sqlite-keyword-primary", False, "Qdrant disabled by default; current local hash embeddings are not semantic")
             return
         try:
             from qdrant_client import QdrantClient

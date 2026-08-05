@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import argparse
 import json
@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     pf = sub.add_parser("preflight"); pf.add_argument("--task", default="current"); pf.add_argument("--goal", required=True)
     st = sub.add_parser("stage"); st.add_argument("--summary", required=True); st.add_argument("--type", default="lesson"); st.add_argument("--scope", default="repository"); st.add_argument("--evidence", default=""); st.add_argument("--task", default="current"); st.add_argument("--tags", default="")
     pub = sub.add_parser("publish"); pub.add_argument("--id", type=int, required=True)
+    cs = sub.add_parser("candidate-status"); cs.add_argument("--id", type=int, required=True); cs.add_argument("--status", required=True, choices=["candidate", "verified", "accepted", "needs-review", "rejected"]); cs.add_argument("--note", default="")
     se = sub.add_parser("search"); se.add_argument("query"); se.add_argument("--limit", type=int, default=8)
     gt = sub.add_parser("gate"); gt.add_argument("--task", default="current")
     ev = sub.add_parser("evidence"); ev.add_argument("--task", default="current"); ev.add_argument("--name", required=True); ev.add_argument("--content", required=True)
@@ -50,6 +51,8 @@ def main(argv: list[str] | None = None) -> int:
         emit({"id": store.stage_candidate(args.summary, args.type, args.scope, args.evidence, args.task, args.tags)}); return 0
     if args.cmd == "publish":
         path = store.publish_candidate(args.id); emit({"published": str(path.relative_to(store.root))}); return 0
+    if args.cmd == "candidate-status":
+        emit({"candidate": store.set_candidate_status(args.id, args.status, args.note).__dict__}); return 0
     if args.cmd == "search":
         emit({"results": store.search(args.query, args.limit)}); return 0
     if args.cmd == "gate":

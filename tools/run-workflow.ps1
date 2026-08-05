@@ -1,8 +1,8 @@
-﻿param(
+param(
     [Parameter(Mandatory=$true)][string]$Title,
     [Parameter(Mandatory=$true)][string]$Goal,
     [string]$Conclusion = "",
-    [string]$ProjectRoot = "G:\AI 架构"
+    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot)
 )
 
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
@@ -24,4 +24,3 @@ if ($Conclusion -and $Conclusion.Trim()) {
     Invoke-Python @("-m", "auto_kb.cli", "workflow", "--title", $Title, "--goal", $Goal) | Out-Null
 }
 exit $LASTEXITCODE
-

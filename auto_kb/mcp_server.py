@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import json
@@ -59,6 +59,18 @@ TOOL_DEFINITIONS = {
             "type": "object",
             "properties": {"id": {"type": "integer"}},
             "required": ["id"],
+        },
+    },
+    "kb.candidate_status": {
+        "description": "Mark a candidate knowledge item as accepted, needs-review, rejected, verified, or candidate.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "integer"},
+                "status": {"type": "string"},
+                "note": {"type": "string", "default": ""},
+            },
+            "required": ["id", "status"],
         },
     },
     "task.create": {
@@ -124,6 +136,7 @@ def call_tool(store: KnowledgeStore, name: str, args: dict[str, Any]) -> Any:
     if name == "kb.search": return store.search(args.get("query", ""), int(args.get("limit", 8)))
     if name == "kb.stage": return {"id": store.stage_candidate(args["summary"], args.get("type", "lesson"), args.get("scope", "repository"), args.get("evidence", ""), args.get("task", "current"), args.get("tags", ""))}
     if name == "kb.publish": return {"path": str(store.publish_candidate(int(args["id"])).relative_to(store.root))}
+    if name == "kb.candidate_status": return {"candidate": store.set_candidate_status(int(args["id"]), args["status"], args.get("note", "")).__dict__}
     if name == "task.create": return {"task_id": store.create_task(args["title"], args.get("goal"))}
     if name == "task.preflight": return store.preflight(args.get("task", "current"), args["goal"])
     if name == "task.gate": return store.gate(args.get("task", "current"))
@@ -206,8 +219,14 @@ def main() -> int:
     store = KnowledgeStore(root)
     store.init()
     for line in sys.stdin:
-        if line.strip():
-            print(json.dumps(handle(json.loads(line), store), ensure_ascii=False), flush=True)
+        if not line.strip():
+            continue
+        try:
+            req = json.loads(line)
+            response = handle(req, store)
+        except Exception as exc:
+            response = {"id": None, "error": {"message": str(exc)}}
+        print(json.dumps(response, ensure_ascii=False), flush=True)
     return 0
 
 
@@ -218,4 +237,3 @@ def stdio_main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(stdio_main())
-

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -20,6 +20,8 @@ ROUTES = {
 REQUIRED_TASK_FILES = ["goal.md", "plan.md", "preflight.md", "log.md"]
 ACTION_STATUSES = {"pending", "resolved", "needs-review", "rejected"}
 ACTION_CLOSED_STATUSES = {"resolved", "needs-review", "rejected"}
+CANDIDATE_STATUSES = {"candidate", "verified", "accepted", "needs-review", "rejected", "published", "duplicate"}
+CANDIDATE_PENDING_STATUSES = {"candidate", "verified"}
 ACTION_RE = re.compile(r"^- \[(?P<status>[^\]]+)\] (?P<id>RA-\d+) \((?P<kind>[^)]+)\) (?P<path>.+?) :: (?P<summary>.*)$")
 
 
@@ -63,8 +65,10 @@ class KnowledgeStore:
 
     def connect(self) -> sqlite3.Connection:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(self.db_path, factory=ClosingConnection)
+        con = sqlite3.connect(self.db_path, timeout=30, factory=ClosingConnection)
         con.row_factory = sqlite3.Row
+        con.execute("pragma busy_timeout=5000")
+        con.execute("pragma journal_mode=WAL")
         return con
 
     def init(self) -> None:
@@ -118,7 +122,7 @@ class KnowledgeStore:
 
     def create_task(self, title: str, goal: str | None = None) -> str:
         self.init()
-        task_id = f"TASK-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{slugify(title)}"
+        task_id = f"TASK-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}-{slugify(title)}"
         task_dir = self.root / "tasks" / task_id
         (task_dir / "evidence").mkdir(parents=True, exist_ok=True)
         (task_dir / "goal.md").write_text(f"# Goal\n\nTitle: {title}\n\nGoal: {goal or title}\n\nAcceptance:\n- Gate must pass.\n- Evidence must be reviewable.\n", encoding="utf-8")
@@ -134,15 +138,20 @@ class KnowledgeStore:
             f.write(f"- {now()} {line}\n")
 
     def add_evidence(self, task_id: str, name: str, content: str) -> Path:
-        path = self.root / "tasks" / task_id / "evidence" / name
+        evidence_name = Path(name)
+        if evidence_name.is_absolute() or evidence_name.name != name or name in {"", ".", ".."}:
+            raise ValueError(f"invalid evidence file name: {name}")
+        path = self.root / "tasks" / task_id / "evidence" / evidence_name.name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
-        self.append_log(task_id, f"evidence added: evidence/{name}")
+        self.append_log(task_id, f"evidence added: evidence/{evidence_name.name}")
         return path
 
     def stage_candidate(self, summary: str, type: str = "lesson", scope: str = "repository", evidence: str = "", source_task: str | None = None, tags: str = "") -> int:
         self.init()
-        source_task = self.resolve_task(source_task) or ""
+        source_task = self.resolve_task(source_task)
+        if not source_task:
+            raise ValueError("candidate knowledge must be attached to a task; create or pass --task explicitly")
         with self.connect() as con:
             cur = con.execute("insert into candidates(type,scope,status,summary,evidence,source_task,tags,created_at) values(?,?,?,?,?,?,?,?)", (type, scope, "candidate", summary, evidence, source_task, tags, now()))
             cid = int(cur.lastrowid)
@@ -158,7 +167,7 @@ class KnowledgeStore:
 
     def pending_candidates(self, task_id: str | None = None) -> list[Candidate]:
         task_id = self.resolve_task(task_id)
-        sql = "select * from candidates where status in ('candidate','verified','accepted')"
+        sql = "select * from candidates where status in ('candidate','verified')"
         args = []
         if task_id:
             sql += " and source_task=?"
@@ -166,6 +175,17 @@ class KnowledgeStore:
         with self.connect() as con:
             rows = con.execute(sql, args).fetchall()
         return [Candidate(**dict(r)) for r in rows]
+
+    def set_candidate_status(self, id: int, status: str, note: str = "") -> Candidate:
+        if status not in CANDIDATE_STATUSES:
+            raise ValueError(f"invalid candidate status: {status}")
+        cand = self.get_candidate(id)
+        with self.connect() as con:
+            con.execute("update candidates set status=? where id=?", (status, id))
+        self.record_event("kb.candidate_status", {"id": id, "from": cand.status, "to": status, "note": note})
+        if cand.source_task:
+            self.append_log(cand.source_task, f"candidate {id} marked {status}: {note or 'no note'}")
+        return self.get_candidate(id)
 
     def publish_candidate(self, id: int, status: str = "published") -> Path:
         cand = self.get_candidate(id)
@@ -389,13 +409,11 @@ class KnowledgeStore:
         pending = self.pending_candidates(task_id)
         if pending:
             errors.append(f"pending candidates: {[c.id for c in pending]}")
+        with self.connect() as con:
+            rows = con.execute("select * from candidates where status in ('candidate','verified') and coalesce(source_task,'')='' ").fetchall()
+        global_pending = [Candidate(**dict(r)) for r in rows]
+        if global_pending:
+            errors.append(f"global pending candidates without source_task: {[c.id for c in global_pending]}")
         result = {"pass": not errors, "errors": errors, "task_id": task_id}
         self.record_event("gate.check", result)
         return result
-
-
-
-
-
-
-

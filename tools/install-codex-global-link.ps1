@@ -1,6 +1,6 @@
 ﻿param(
-    [string]$ProjectRoot = "G:\AI 架构",
-    [string]$AliasRoot = "G:\AI_KB",
+    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$AliasRoot = "",
     [string]$CodexHome = (Join-Path $env:USERPROFILE ".codex")
 )
 
@@ -9,30 +9,50 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = "Stop"
 
 if (!(Test-Path -LiteralPath $ProjectRoot)) {
-    throw "找不到中央知识库目录：$ProjectRoot。请确认移动硬盘盘符是 G:。"
+    throw "找不到中央知识库目录：$ProjectRoot。请确认移动硬盘已挂载，或用 -ProjectRoot 传入真实目录。"
 }
-
-if (Test-Path -LiteralPath $AliasRoot) {
-    $Item = Get-Item -LiteralPath $AliasRoot -Force
-    if (-not (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq [IO.FileAttributes]::ReparsePoint)) {
-        throw "$AliasRoot 已存在但不是目录联接。为避免覆盖用户数据，请手动处理后重试。"
-    }
-} else {
-    New-Item -ItemType Junction -Path $AliasRoot -Target $ProjectRoot | Out-Null
-}
+$ProjectRoot = (Resolve-Path -LiteralPath $ProjectRoot).Path
 
 New-Item -ItemType Directory -Path $CodexHome -Force | Out-Null
 
-$AgentsPath = Join-Path $CodexHome "AGENTS.md"
-if (Test-Path -LiteralPath $AgentsPath) {
-    $ExistingAgents = Get-Content -LiteralPath $AgentsPath -Raw
-    if ($ExistingAgents -and $ExistingAgents -notmatch "Global Central Knowledge Base Rules") {
-        $BackupPath = Join-Path $CodexHome ("AGENTS.md.backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
-        Copy-Item -LiteralPath $AgentsPath -Destination $BackupPath -Force
-        Write-Host "已备份原全局 AGENTS.md：$BackupPath" -ForegroundColor Yellow
+if (!$AliasRoot) {
+    $AliasRoot = Join-Path ([System.IO.Path]::GetPathRoot($ProjectRoot)) "AI_KB"
+}
+
+function Ensure-AliasRoot([string]$Path, [string]$Target) {
+    if (Test-Path -LiteralPath $Path) {
+        $Item = Get-Item -LiteralPath $Path -Force
+        if (-not (($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq [IO.FileAttributes]::ReparsePoint)) {
+            throw "$Path 已存在但不是目录联接。为避免覆盖用户数据，请手动处理后重试。"
+        }
+        return $Path
+    }
+    New-Item -ItemType Junction -Path $Path -Target $Target | Out-Null
+    return $Path
+}
+
+try {
+    $AliasRoot = Ensure-AliasRoot -Path $AliasRoot -Target $ProjectRoot
+} catch {
+    $PreferredError = $_.Exception.Message
+    $FallbackAlias = Join-Path $CodexHome "AI_KB"
+    try {
+        $AliasRoot = Ensure-AliasRoot -Path $FallbackAlias -Target $ProjectRoot
+        Write-Host "盘根目录别名创建失败，已改用 CodexHome 别名：$AliasRoot" -ForegroundColor Yellow
+        Write-Host "原始错误：$PreferredError" -ForegroundColor DarkYellow
+    } catch {
+        Write-Host "无法创建 ASCII 目录联接，暂时直接使用真实目录：$ProjectRoot" -ForegroundColor Yellow
+        Write-Host "原始错误：$PreferredError" -ForegroundColor DarkYellow
+        Write-Host "兜底错误：$($_.Exception.Message)" -ForegroundColor DarkYellow
+        $AliasRoot = $ProjectRoot
     }
 }
-$Agents = @"
+
+$AgentsPath = Join-Path $CodexHome "AGENTS.md"
+$StartMarker = "<!-- AUTO_KB_GLOBAL_START -->"
+$EndMarker = "<!-- AUTO_KB_GLOBAL_END -->"
+$AgentsBlock = @"
+$StartMarker
 # Global Central Knowledge Base Rules
 
 These are the user's personal default rules for Codex on this computer. They apply across folders unless the user explicitly says otherwise. System/developer instructions and the user's latest explicit request still take priority.
@@ -59,12 +79,30 @@ These are the user's personal default rules for Codex on this computer. They app
 
 - If working in another project folder, obey that project's local ``AGENTS.md`` for repo-specific code style and commands, while still using the central knowledge base for the user's personal memory and reusable decisions.
 - If ``$ProjectRoot`` is missing, tell the user that the mobile drive is not mounted or the drive letter changed, then continue with the best available local context.
+$EndMarker
 "@
-Set-Content -LiteralPath $AgentsPath -Value $Agents -Encoding UTF8
+
+$ExistingAgents = ""
+if (Test-Path -LiteralPath $AgentsPath) {
+    $ExistingAgents = Get-Content -LiteralPath $AgentsPath -Raw -Encoding UTF8
+}
+
+$MarkerPattern = "(?s)$([regex]::Escape($StartMarker)).*?$([regex]::Escape($EndMarker))"
+if ($ExistingAgents -match $MarkerPattern) {
+    $MergedAgents = [regex]::Replace($ExistingAgents, $MarkerPattern, [System.Text.RegularExpressions.MatchEvaluator]{ param($m) $AgentsBlock }, 1)
+} elseif ($ExistingAgents.Trim()) {
+    $BackupPath = Join-Path $CodexHome ("AGENTS.md.backup-" + (Get-Date -Format "yyyyMMdd-HHmmss"))
+    Copy-Item -LiteralPath $AgentsPath -Destination $BackupPath -Force
+    Write-Host "已备份原全局 AGENTS.md：$BackupPath" -ForegroundColor Yellow
+    $MergedAgents = $ExistingAgents.TrimEnd() + "`r`n`r`n" + $AgentsBlock
+} else {
+    $MergedAgents = $AgentsBlock
+}
+Set-Content -LiteralPath $AgentsPath -Value $MergedAgents -Encoding UTF8
 
 $ConfigPath = Join-Path $CodexHome "config.toml"
 if (Test-Path -LiteralPath $ConfigPath) {
-    $Lines = Get-Content -LiteralPath $ConfigPath
+    $Lines = Get-Content -LiteralPath $ConfigPath -Encoding UTF8
 } else {
     $Lines = @("[mcp_servers]")
 }
@@ -83,7 +121,12 @@ foreach ($Line in $Lines) {
 }
 
 $VenvPython = Join-Path $AliasRoot ".venv\Scripts\python.exe"
-$McpCommand = if ((Test-Path -LiteralPath $VenvPython) -and (& $VenvPython --version *> $null; $LASTEXITCODE -eq 0)) { $VenvPython } else { "python" }
+$VenvWorks = $false
+if (Test-Path -LiteralPath $VenvPython) {
+    & $VenvPython --version *> $null
+    $VenvWorks = ($LASTEXITCODE -eq 0)
+}
+$McpCommand = if ($VenvWorks) { $VenvPython } else { "python" }
 
 $Block = @(
     '',
@@ -103,6 +146,4 @@ Set-Content -LiteralPath $ConfigPath -Value $Out -Encoding UTF8
 Write-Host "Codex 全局知识库自动链接已安装。" -ForegroundColor Green
 Write-Host "真实数据：$ProjectRoot" -ForegroundColor Green
 Write-Host "自动化别名：$AliasRoot" -ForegroundColor Green
-
-
 

@@ -1,5 +1,5 @@
-﻿param(
-    [string]$ProjectRoot = "G:\AI 架构",
+param(
+    [string]$ProjectRoot = (Split-Path -Parent $PSScriptRoot),
     [switch]$UseVenv,
     [switch]$NoAutoInstallPython
 )
@@ -132,5 +132,3 @@ if ($LASTEXITCODE -ne 0) { throw "Codex 全局自动链接安装失败。" }
 Write-Step "完成"
 Write-Host "知识库可用。数据位置：$ProjectRoot" -ForegroundColor Green
 Write-Host "Codex 全局自动链接已配置；重新打开 Codex 或新建任务后生效。" -ForegroundColor Green
-
-
